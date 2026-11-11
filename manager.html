@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>EnhancedChrome</title>
+  <script type="module" src="typography.js"></script>
+  <link rel="stylesheet" href="typography.css">
+  <link rel="stylesheet" href="manager.css">
+  <script type="module" src="manager.js"></script>
+  <script type="module" src="settings.js"></script>
+</head>
+<body>
+  <header class="toolbar">
+    <div class="toolbar-title">所有文件夹</div>
+    <label class="search"><span aria-hidden="true">⌕</span><input id="search" type="search" placeholder="搜索书签名称或网址" aria-label="搜索书签名称或网址"><kbd>Ctrl F</kbd></label>
+    <div class="toolbar-actions">
+      <button id="manage-tags" class="text-button">管理标签</button>
+      <button id="export-tags" class="text-button">导出标签</button>
+      <button id="import-tags" class="text-button">导入标签</button>
+      <button id="settings" class="text-button">设置</button>
+    </div>
+    <input id="backup-file" type="file" accept=".json,application/json" hidden>
+  </header>
+  <div class="layout">
+    <aside id="sidebar" aria-label="书签文件夹"><nav id="folders"></nav><div class="sidebar-note tag-sync-panel"><div id="tag-sync-status" data-state="syncing" role="status" aria-live="polite"><span class="tag-sync-indicator" aria-hidden="true"></span><span id="tag-sync-text">正在检查标签同步…</span></div><p id="tag-sync-detail"></p><button id="retry-tag-sync" class="text-button" hidden>重试同步</button></div></aside>
+    <div id="sidebar-resizer" role="separator" tabindex="0" aria-label="调整文件夹侧栏宽度" aria-orientation="vertical" aria-controls="sidebar" aria-valuemin="140" aria-valuemax="600" aria-valuenow="280" title="左右拖动调整宽度，或按左右方向键"></div>
+    <main>
+      <section class="filter-panel" aria-label="标签筛选">
+        <div class="filter-heading"><span>按标签筛选</span><div class="filter-mode" role="group" aria-label="标签筛选模式"><button id="filter-single" type="button" aria-pressed="false">单选</button><button id="filter-multiple" type="button" aria-pressed="true">多选</button></div><span id="filter-mode-hint" class="muted">多选时同时包含</span><button id="clear-tags" class="text-button">重置</button></div>
+        <div id="tag-filters" class="chips"></div>
+      </section>
+      <div class="list-heading"><h2 id="folder-title">全部书签</h2><span id="result-count" class="muted"></span><span id="scope-hint" class="muted"></span><button id="bulk-tags" class="text-button">批量打标签</button>
+      <div id="selection-toolbar" hidden>
+        <span id="selection-count" role="status">已选0条书签</span>
+        <button id="select-page" class="text-button">全选本页</button>
+        <button id="clear-selection" class="text-button">取消全选</button>
+        <button id="label-selection" class="primary-button" disabled>设置标签</button>
+        <button id="exit-selection" class="text-button">退出批量</button>
+      </div>
+      </div>
+      <div id="error" role="alert" hidden></div>
+      <p id="backup-status" role="status"></p>
+      <p id="backup-error" class="form-error" role="alert"></p>
+      <details id="pending-panel" hidden>
+        <summary id="pending-summary">待处理关联</summary>
+        <div class="dialog-heading"><p class="muted">重复网址可手动关联，书签同步后可重新匹配。未匹配记录会保留。</p><button id="retry-pending" class="text-button">重新匹配</button></div>
+        <div id="pending-records"></div>
+        <div class="pending-pagination"><button id="pending-previous" class="text-button">上一页</button><span id="pending-page-info" class="muted"></span><button id="pending-next" class="text-button">下一页</button></div>
+      </details>
+      <section id="bookmarks" class="bookmark-list" aria-label="收藏列表"><p class="empty">正在读取书签…</p></section>
+      <nav id="pagination" class="pagination" aria-label="书签分页" hidden>
+        <span id="page-info" class="muted" aria-live="polite"></span>
+        <button id="previous-page" class="text-button">上一页</button>
+        <button id="next-page" class="text-button">下一页</button>
+      </nav>
+    </main>
+  </div>
+  <dialog id="tag-dialog" aria-labelledby="tag-dialog-title">
+    <div class="dialog-heading"><h2 id="tag-dialog-title">管理标签</h2><button class="icon-button close-dialog" aria-label="关闭">×</button></div>
+    <p id="tag-dialog-description" class="muted"></p>
+    <div id="tag-options"></div>
+    <form id="new-tag-form" class="new-tag"><input id="new-tag" maxlength="30" placeholder="新标签名称" aria-label="新标签名称" required><button class="text-button" type="submit">＋ 新增</button></form>
+    <p id="dialog-error" class="form-error" role="alert"></p>
+    <div class="dialog-footer"><button class="text-button close-dialog">关闭</button><button id="save-tags" class="primary-button" hidden>保存</button></div>
+  </dialog>
+  <dialog id="rename-tag-dialog" aria-labelledby="rename-tag-title">
+    <form id="rename-tag-form">
+      <h2 id="rename-tag-title">编辑标签</h2>
+      <label class="field">标签名称<input id="rename-tag-name" maxlength="30" required></label>
+      <p id="rename-tag-error" class="form-error" role="alert"></p>
+      <div class="dialog-footer"><button type="button" class="text-button close-dialog">取消</button><button id="rename-tag-save" class="primary-button" type="submit">保存</button></div>
+    </form>
+  </dialog>
+  <dialog id="edit-dialog" aria-labelledby="edit-title">
+    <form id="edit-form">
+      <h2 id="edit-title">编辑书签</h2>
+      <label class="field">名称<input id="bookmark-name" required></label>
+      <label class="field">网址<input id="bookmark-url" type="url" required></label>
+      <p id="edit-error" class="form-error" role="alert"></p>
+      <div class="dialog-footer"><button type="button" class="text-button close-dialog">取消</button><button class="primary-button" type="submit">保存</button></div>
+    </form>
+  </dialog>
+  <dialog id="settings-dialog" aria-labelledby="settings-title">
+    <div class="dialog-heading"><h2 id="settings-title">设置</h2><button class="icon-button close-dialog" aria-label="关闭">×</button></div>
+    <h3>显示</h3>
+    <label class="setting-row"><span>字体大小</span><select id="font-size" aria-label="字体大小"><option value="12">12px</option><option value="13">13px</option><option value="14">14px（默认）</option><option value="15">15px</option><option value="16">16px</option><option value="17">17px</option><option value="18">18px</option><option value="19">19px</option><option value="20">20px</option></select></label>
+    <h3>新标签页</h3>
+    <label class="setting-row"><span>每个窗口只保留一个新标签页</span><input id="single-newtab-enabled" type="checkbox"></label>
+    <h3>网页去重</h3>
+    <label class="setting-row"><span>自动关闭当前窗口的重复网页</span><input id="dedupe-enabled" type="checkbox"></label>
+    <button id="open-url-rules" class="text-button">URL规则与导入导出</button>
+    <h3>打开页面的快捷键</h3>
+    <p id="current-shortcut" class="muted">正在读取…</p>
+    <button id="configure-shortcut" class="text-button">设置快捷键</button>
+    <h3>当前页面地址</h3>
+    <label class="field">书签页面地址<input id="page-url" readonly></label>
+    <button id="copy-page-url" class="text-button">复制页面地址</button>
+    <p id="settings-error" class="form-error" role="alert"></p>
+  </dialog>
+  <dialog id="module-settings-dialog" aria-labelledby="module-settings-title">
+    <div class="dialog-heading"><h2 id="module-settings-title">功能设置</h2><button class="icon-button close-dialog" aria-label="关闭">×</button></div>
+    <iframe id="module-settings-frame" title="功能设置"></iframe>
+  </dialog>
+  <div id="toast" role="status" hidden></div>
+</body>
+</html>

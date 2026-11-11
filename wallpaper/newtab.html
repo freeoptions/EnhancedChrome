@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>新标签页</title>
+  <script type="module" src="../typography.js"></script>
+  <link rel="stylesheet" href="../typography.css">
+  <link rel="stylesheet" href="newtab.css">
+</head>
+<body>
+  <div id="setup" class="screen" hidden>
+    <div class="card">
+      <h1>设置壁纸文件夹</h1>
+      <p class="desc">选择你的壁纸文件夹</p>
+      <button id="restoreBtn" hidden>恢复原目录授权</button>
+      <button id="pickBtn">选择文件夹</button>
+      <button id="previewBtn">预览壁纸</button>
+      <div id="importStatus" class="import-status" aria-live="polite" hidden>
+        <div class="progress-track" aria-hidden="true">
+          <div class="progress-bar"></div>
+        </div>
+        <p id="importStatusText">正在扫描壁纸文件夹…</p>
+      </div>
+      <p class="hint">选择一次壁纸文件夹后，后续会直接按目录读取壁纸</p>
+    </div>
+    <input type="file" id="folderInput" webkitdirectory multiple hidden>
+  </div>
+
+  <div id="main" class="screen">
+    <div class="wallpaper-stack" aria-hidden="true">
+      <div id="wallpaperA" class="wallpaper"></div>
+      <div id="wallpaperB" class="wallpaper"></div>
+    </div>
+    <div class="actions">
+      <button id="settingsBtn" type="button" title="重新选择文件夹" aria-label="重新选择文件夹">
+        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m9.5 3-.6 2.4-1.7 1L4.8 6 2.3 10l1.8 1.7v2L2.3 15.4l2.5 4 2.4-.5 1.7 1 .6 2.1h5l.6-2.1 1.7-1 2.4.5 2.5-4-1.8-1.7v-2L21.7 10l-2.5-4-2.4.4-1.7-1-.6-2.4Z"/><circle cx="12" cy="12.5" r="3.2"/></svg>
+      </button>
+      <button id="exportBtn" type="button" title="导出已标记壁纸路径" aria-label="导出已标记壁纸路径">
+        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M9 5H6a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-3"/><rect x="9" y="2" width="6" height="5" rx="1.5"/><path d="M12 11v7m-3-3 3 3 3-3"/></svg>
+      </button>
+      <button id="dislikeBtn" type="button" title="不喜欢当前壁纸" aria-label="不喜欢当前壁纸">
+        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M7 4h12a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-5l1 5a3 3 0 0 1-3 3l-5-8V4Z"/><rect x="3" y="4" width="4" height="10" rx="1"/></svg>
+      </button>
+    </div>
+  </div>
+
+  <div id="toast" class="toast"></div>
+  <div id="syncHint" class="sync-hint" aria-live="polite" hidden></div>
+
+  <script src="newtab.js"></script>
+</body>
+</html>

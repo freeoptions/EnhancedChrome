@@ -1,0 +1,59 @@
+{
+  "manifest_version": 3,
+  "name": "EnhancedChrome",
+  "version": "1.1.3",
+  "icons": {
+    "128": "icons/surveys.png"
+  },
+  "description": "书签标签、壁纸新标签页和当前窗口网页去重，设置集中管理。",
+  "minimum_chrome_version": "110",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAq9IRHb2D3RlaUVVGM+n31t57AUQPSgI1aw7JrUt6uPMUImWMnnJ5jfMny96hAb5RahwAOqIwsgz7DpamjohImb3M3CnIYvnGD8dty/an8yT2HPlsSVLwaT2Ukb0Jo+BkbssVurkoV8vdPjbaroTcNCKC0ksj43EFbSqMnxv25Bpg6bs+BFPt1TeW5Qy57qD/STzgPBC3721S3BBFN1MoC+FUSNuJI6rQiwoq/6N+1eCR0OBaicInNY/x9gvdKQXBxY441BVe2QznGZBDF93H90vjn4EW0wkn9UmrVT6Ivz1fv1Sveu7lfwp6FHjGlCqdouBYhFmKCIWLEgVZrSRpfQIDAQAB",
+  "permissions": [
+    "bookmarks",
+    "storage",
+    "alarms",
+    "tabs",
+    "scripting",
+    "webNavigation",
+    "unlimitedStorage"
+  ],
+  "host_permissions": [
+    "http://*/*",
+    "https://*/*",
+    "file:///*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "打开EnhancedChrome",
+    "default_icon": "icons/surveys.png"
+  },
+  "options_page": "manager.html?settings=1",
+  "chrome_url_overrides": {
+    "newtab": "wallpaper/newtab.html"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "http://*/*",
+        "https://*/*",
+        "file:///*"
+      ],
+      "js": [
+        "dedupe/content-script.js"
+      ],
+      "run_at": "document_start",
+      "world": "ISOLATED"
+    }
+  ],
+  "commands": {
+    "_execute_action": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+Y",
+        "mac": "Command+Shift+Y"
+      }
+    }
+  }
+}

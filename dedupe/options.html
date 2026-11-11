@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>防重复打开 - URL 规则</title>
+  <script type="module" src="../typography.js"></script>
+  <link rel="stylesheet" href="../typography.css">
+  <link rel="stylesheet" href="options.css">
+</head>
+<body>
+  <main class="page">
+    <header class="page-header">
+      <div>
+        <p class="eyebrow">DUPLICATE URL CONTROL</p>
+        <h1>URL 规则</h1>
+        <p class="intro">只忽略你明确配置的参数，不会修改地址栏中的真实 URL。</p>
+      </div>
+      <div class="header-actions">
+        <button id="export-rules-button" class="secondary-button" type="button">导出规则</button>
+        <button id="import-rules-button" class="secondary-button" type="button">导入规则</button>
+        <input id="import-rules-input" type="file" accept=".json,application/json" hidden>
+        <button id="rescan-button" class="secondary-button" type="button">重新扫描当前窗口</button>
+      </div>
+    </header>
+
+    <section class="panel">
+      <div class="panel-heading">
+        <div>
+          <h2>添加规则</h2>
+          <p>手动填写匹配范围，或用多个样本 URL 自动分析查询参数。</p>
+        </div>
+      </div>
+
+      <form id="rule-form" class="rule-form">
+        <label>
+          <span>规则名称</span>
+          <input id="rule-name" type="text" placeholder="例如：Feishu Wiki 文档">
+        </label>
+        <div class="field-grid">
+          <label>
+            <span>协议 <em>可选</em></span>
+            <input id="rule-scheme" type="text" placeholder="https">
+          </label>
+          <label>
+            <span>域名 <em>支持 *</em></span>
+            <input id="rule-host" type="text" placeholder="*.feishu.cn">
+          </label>
+        </div>
+        <label>
+          <span>路径 <em>支持 *</em></span>
+          <input id="rule-path" type="text" placeholder="/wiki/*">
+        </label>
+        <label>
+          <span>忽略的查询参数 <em>每行一个，可使用 *</em></span>
+          <textarea id="rule-params" rows="3" placeholder="cf_*&#10;utm_source"></textarea>
+        </label>
+        <label class="checkbox-label">
+          <input id="rule-include-hash" type="checkbox" checked>
+          <span>让 hash 参与重复判断</span>
+        </label>
+        <button class="primary-button" type="submit">保存规则</button>
+      </form>
+    </section>
+
+    <section class="panel">
+      <div class="panel-heading">
+        <div>
+          <h2>从样本 URL 提取</h2>
+          <p>每行粘贴一个 URL，至少两个；当前仅自动提取相同路径下的查询参数差异。</p>
+        </div>
+      </div>
+      <textarea id="sample-urls" class="sample-input" rows="6" placeholder="https://example.com/page?tracking=123&#10;https://example.com/page"></textarea>
+      <div class="actions-row">
+        <button id="analyze-button" class="secondary-button" type="button">分析规则</button>
+        <button id="confirm-generated-button" class="primary-button" type="button" disabled>确认并添加</button>
+      </div>
+      <p id="analyze-message" class="message"></p>
+      <pre id="generated-preview" class="code-preview hidden"></pre>
+    </section>
+
+    <section class="panel">
+      <div class="panel-heading">
+        <div>
+          <h2>已保存规则</h2>
+          <p>规则只在本地保存，并且只作用于当前 Chrome 窗口的去重。导入导出使用 JSON 文件。</p>
+        </div>
+      </div>
+      <div id="rules-list" class="rules-list"></div>
+    </section>
+
+    <section class="panel help-panel">
+      <h2>规则字段说明</h2>
+      <pre class="code-preview">{
+  // 规则名称，方便识别
+  "name": "Feishu Wiki 文档",
+  // 是否启用
+  "enabled": true,
+  // 匹配范围；* 表示任意字符
+  "scheme": "https",
+  "host": "*.feishu.cn",
+  "path": "/wiki/*",
+  // 要忽略的查询参数名，不填写参数值
+  "ignoreQueryParams": ["cf_*"],
+  // true 表示 #hash 参与判断
+  "includeHash": true
+}</pre>
+    </section>
+  </main>
+  <script type="module" src="options.js"></script>
+</body>
+</html>
