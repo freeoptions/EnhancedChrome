@@ -20,6 +20,7 @@ let hasAppliedWallpaper = false;
 let wallpaperDirectoryHandle = null;
 let wallpaperDbPromise = null;
 let needsPermissionRestore = false;
+let wallpaperOperationRunning = false;
 
 const setupEl = document.getElementById('setup');
 const mainEl = document.getElementById('main');
@@ -34,6 +35,7 @@ const wallpaperElementList = [
 const dislikeBtn = document.getElementById('dislikeBtn');
 const exportBtn = document.getElementById('exportBtn');
 const settingsBtn = document.getElementById('settingsBtn');
+const rescanBtn = document.getElementById('rescanBtn');
 const toastEl = document.getElementById('toast');
 const syncHintEl = document.getElementById('syncHint');
 const importStatusEl = document.getElementById('importStatus');
@@ -173,6 +175,9 @@ function updateImportStatus(message) {
 }
 
 async function showMain() {
+  if (wallpaperOperationRunning) return;
+  wallpaperOperationRunning = true;
+  rescanBtn.disabled = true;
   setupEl.hidden = true;
   mainEl.hidden = false;
 
@@ -205,6 +210,9 @@ async function showMain() {
     }
 
     showToast('壁纸加载失败，已自动尝试其他图片');
+  } finally {
+    wallpaperOperationRunning = false;
+    rescanBtn.disabled = false;
   }
 }
 
@@ -346,9 +354,10 @@ async function reserveWallpaperCandidate(attemptedPathSet) {
     };
   }
 
-  const nextPath = unplayedPathList.find(path => !attemptedPathSet.has(path));
+  const nextPath = unplayedPathList.find(path => path !== currentPath && !attemptedPathSet.has(path))
+    ?? (!replayCandidateList.length ? unplayedPathList.find(path => !attemptedPathSet.has(path)) : null);
   if (!nextPath) {
-    return null;
+    return replayCandidateList.length ? { path: randomItem(replayCandidateList), isReplay: true } : null;
   }
 
   const nextUnplayedPathList = unplayedPathList.filter(path => path !== nextPath);
@@ -429,7 +438,7 @@ async function handleWallpaperReadFailures(failureCount) {
   return false;
 }
 
-async function refreshWallpaperDirectory() {
+async function refreshWallpaperDirectory({ manual = false } = {}) {
   try {
     const handle = await getWallpaperDirectoryHandle();
     if (!handle) {
@@ -438,15 +447,21 @@ async function refreshWallpaperDirectory() {
       throw error;
     }
 
+    const { files: previousFileList = [] } = await chrome.storage.local.get('files');
     const refreshedFileList = await scanWallpaperDirectory(handle);
+    const previousPathSet = new Set(previousFileList);
+    const refreshedPathSet = new Set(refreshedFileList);
+    const addedCount = refreshedFileList.filter(path => !previousPathSet.has(path)).length;
+    const removedCount = previousFileList.filter(path => !refreshedPathSet.has(path)).length;
     await chrome.storage.local.set({
       files: refreshedFileList,
       [WALLPAPER_FAILURE_COUNT_KEY]: 0
     });
-    showSyncHint(`壁纸目录已更新，共 ${refreshedFileList.length} 张`, false, 2600);
+    await prepareWallpaperCycle(refreshedFileList);
+    showSyncHint(`目录重扫完成：新增${addedCount}张，移除${removedCount}张，共${refreshedFileList.length}张`, false, 8000);
     return refreshedFileList;
   } catch (error) {
-    if (error?.code === 'WALLPAPER_PERMISSION_REQUIRED'
+    if (manual || error?.code === 'WALLPAPER_PERMISSION_REQUIRED'
       || error?.code === 'WALLPAPER_DIRECTORY_MISSING') {
       throw error;
     }
@@ -698,6 +713,35 @@ exportBtn.onclick = async () => {
     showToast('导出失败，标记已保留');
   }
 };
+
+rescanBtn.onclick = async () => {
+  if (wallpaperOperationRunning) return;
+  wallpaperOperationRunning = true;
+  rescanBtn.disabled = true;
+  showSyncHint('正在重新扫描壁纸目录…', true);
+  try {
+    await refreshWallpaperDirectory({ manual: true });
+  } catch (error) {
+    console.warn('Manual wallpaper rescan failed:', error);
+    const permissionRequired = error?.code === 'WALLPAPER_PERMISSION_REQUIRED' || error?.name === 'NotAllowedError';
+    if (permissionRequired) {
+      needsPermissionRestore = true;
+      mainEl.hidden = true;
+      setupEl.hidden = false;
+      updateSetupActions();
+    }
+    showSyncHint(permissionRequired ? '目录重扫失败，请先恢复原目录授权' : '目录重扫失败，请检查目录或重新选择文件夹', false, 8000);
+  } finally {
+    wallpaperOperationRunning = false;
+    rescanBtn.disabled = false;
+  }
+};
+
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && hasAppliedWallpaper && !mainEl.hidden) {
+    showMain();
+  }
+});
 
 settingsBtn.onclick = () => {
   mainEl.hidden = true;

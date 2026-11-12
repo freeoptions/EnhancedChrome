@@ -196,6 +196,11 @@ body {
   pointer-events: none;
 }
 
+.actions button:disabled {
+  cursor: wait;
+  opacity: 0.62;
+}
+
 .actions button:hover {
   background: #fff;
   color: var(--action-accent);
