@@ -29,8 +29,8 @@
 
   <div id="main" class="screen">
     <div class="wallpaper-stack" aria-hidden="true">
-      <div id="wallpaperA" class="wallpaper"></div>
-      <div id="wallpaperB" class="wallpaper"></div>
+      <img id="wallpaperA" class="wallpaper" alt="" decoding="async" draggable="false">
+      <img id="wallpaperB" class="wallpaper" alt="" decoding="async" draggable="false">
     </div>
     <div class="actions">
       <button id="rescanBtn" type="button" title="重新扫描壁纸目录" aria-label="重新扫描壁纸目录">
@@ -51,6 +51,7 @@
   <div id="toast" class="toast"></div>
   <div id="syncHint" class="sync-hint" aria-live="polite" hidden></div>
 
+  <script src="startup.js"></script>
   <script src="newtab.js"></script>
 </body>
 </html>

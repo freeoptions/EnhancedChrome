@@ -12,6 +12,7 @@ const WALLPAPER_FAILURE_COUNT_KEY = 'wallpaperDirectoryChangeCount';
 const WALLPAPER_UNPLAYED_QUEUE_KEY = 'wallpaperUnplayedQueue';
 const WALLPAPER_PLAYED_PATHS_KEY = 'wallpaperPlayedPaths';
 const WALLPAPER_REVISIT_PROBABILITY = 0.1;
+const WALLPAPER_LAST_PATH_KEY = 'wallpaperLastSelectedPath';
 
 let currentPath = null;
 let currentWallpaperUrl = null;
@@ -21,6 +22,10 @@ let wallpaperDirectoryHandle = null;
 let wallpaperDbPromise = null;
 let needsPermissionRestore = false;
 let wallpaperOperationRunning = false;
+let wallpaperRefreshPending = false;
+let wallpaperRefreshTimer = null;
+let wallpaperTabId = null;
+let wallpaperInitialized = false;
 
 const setupEl = document.getElementById('setup');
 const mainEl = document.getElementById('main');
@@ -32,6 +37,11 @@ const wallpaperElementList = [
   document.getElementById('wallpaperA'),
   document.getElementById('wallpaperB')
 ];
+if (wallpaperElementList[0].getAttribute('src')) {
+  hasAppliedWallpaper = true;
+  currentWallpaperUrl = wallpaperElementList[0].src;
+  currentPath = wallpaperElementList[0].dataset.path;
+}
 const dislikeBtn = document.getElementById('dislikeBtn');
 const exportBtn = document.getElementById('exportBtn');
 const settingsBtn = document.getElementById('settingsBtn');
@@ -175,14 +185,20 @@ function updateImportStatus(message) {
 }
 
 async function showMain() {
-  if (wallpaperOperationRunning) return;
+  if (wallpaperOperationRunning) {
+    wallpaperRefreshPending = true;
+    return;
+  }
   wallpaperOperationRunning = true;
   rescanBtn.disabled = true;
   setupEl.hidden = true;
   mainEl.hidden = false;
 
   try {
-    await loadRandomWallpaper();
+    if (await loadRandomWallpaper() === false) {
+      mainEl.hidden = true;
+      setupEl.hidden = false;
+    }
   } catch (error) {
     console.error('Load wallpaper failed:', error);
 
@@ -212,23 +228,30 @@ async function showMain() {
     showToast('壁纸加载失败，已自动尝试其他图片');
   } finally {
     wallpaperOperationRunning = false;
+    wallpaperInitialized = true;
     rescanBtn.disabled = false;
+    flushWallpaperRefresh();
   }
 }
 
 async function loadRandomWallpaper({ skipFailureScan = false } = {}) {
   const { files: fileList = [] } = await chrome.storage.local.get('files');
   if (!fileList.length) {
-    return;
+    return false;
   }
-
-  await prepareWallpaperCycle(fileList);
 
   const failedItemList = [];
   const attemptedPathSet = new Set();
 
   for (let attempt = 0; attempt < MAX_WALLPAPER_LOAD_ATTEMPTS; attempt += 1) {
-    const candidate = await reserveWallpaperCandidate(attemptedPathSet);
+    // Directory access and queue selection are independent; don't serialize startup I/O.
+    const [candidate, directory] = await Promise.all([
+      navigator.locks.request('wallpaper-selection', async () => {
+        const state = await prepareWallpaperCycle(fileList, false);
+        return reserveWallpaperCandidate(attemptedPathSet, state);
+      }),
+      getWallpaperDirectoryHandle().then(handle => ({ handle }), error => ({ error }))
+    ]);
     if (!candidate) {
       break;
     }
@@ -238,23 +261,29 @@ async function loadRandomWallpaper({ skipFailureScan = false } = {}) {
     let fileUrl = null;
 
     try {
-      fileUrl = await resolveWallpaperUrl(path);
-      await preloadWallpaper(fileUrl);
+      if (directory.error) throw directory.error;
+      fileUrl = await resolveWallpaperUrl(path, directory.handle);
+      await applyWallpaper(fileUrl);
       currentPath = path;
-      applyWallpaper(fileUrl);
+      scheduleWallpaperPreview(path, fileUrl);
 
-      const directoryChangeCount = countDirectoryChangeFailures(failedItemList);
-      if (failedItemList.length) {
-        await removeUnavailableWallpaperPaths(failedItemList);
-      }
-      if (directoryChangeCount && !skipFailureScan) {
-        const shouldRescan = await handleWallpaperReadFailures(directoryChangeCount);
-        if (shouldRescan) {
-          await refreshWallpaperDirectory();
+      try {
+        const directoryChangeCount = countDirectoryChangeFailures(failedItemList);
+        if (failedItemList.length) {
+          await removeUnavailableWallpaperPaths(failedItemList);
         }
+        if (directoryChangeCount && !skipFailureScan) {
+          const shouldRescan = await handleWallpaperReadFailures(directoryChangeCount);
+          if (shouldRescan) {
+            await refreshWallpaperDirectory();
+          }
+        }
+      } catch (error) {
+        // Bookkeeping failure must not enter the image-failure path and revoke the displayed URL.
+        console.warn('Wallpaper displayed, but directory bookkeeping failed:', error);
       }
 
-      return;
+      return true;
     } catch (error) {
       if (error?.code === 'WALLPAPER_PERMISSION_REQUIRED'
         || error?.code === 'WALLPAPER_DIRECTORY_MISSING'
@@ -286,7 +315,7 @@ async function loadRandomWallpaper({ skipFailureScan = false } = {}) {
       const refreshedFileList = await refreshWallpaperDirectory();
       if (refreshedFileList.length) {
         await loadRandomWallpaper({ skipFailureScan: true });
-        return;
+        return true;
       }
     }
   }
@@ -296,10 +325,11 @@ async function loadRandomWallpaper({ skipFailureScan = false } = {}) {
   throw error;
 }
 
-async function prepareWallpaperCycle(fileList) {
+async function prepareWallpaperCycle(fileList, persist = true) {
   const result = await chrome.storage.local.get([
     WALLPAPER_UNPLAYED_QUEUE_KEY,
-    WALLPAPER_PLAYED_PATHS_KEY
+    WALLPAPER_PLAYED_PATHS_KEY,
+    WALLPAPER_LAST_PATH_KEY
   ]);
   const validPathSet = new Set(fileList);
   const storedUnplayedPathList = Array.isArray(result[WALLPAPER_UNPLAYED_QUEUE_KEY])
@@ -326,16 +356,25 @@ async function prepareWallpaperCycle(fileList) {
     playedPathList = [];
   }
 
-  await chrome.storage.local.set({
+  const state = {
     [WALLPAPER_UNPLAYED_QUEUE_KEY]: unplayedPathList,
-    [WALLPAPER_PLAYED_PATHS_KEY]: playedPathList
-  });
+    [WALLPAPER_PLAYED_PATHS_KEY]: playedPathList,
+    [WALLPAPER_LAST_PATH_KEY]: result[WALLPAPER_LAST_PATH_KEY]
+  };
+  if (persist) {
+    await chrome.storage.local.set({
+      [WALLPAPER_UNPLAYED_QUEUE_KEY]: unplayedPathList,
+      [WALLPAPER_PLAYED_PATHS_KEY]: playedPathList
+    });
+  }
+  return state;
 }
 
-async function reserveWallpaperCandidate(attemptedPathSet) {
-  const result = await chrome.storage.local.get([
+async function reserveWallpaperCandidate(attemptedPathSet, state) {
+  const result = state ?? await chrome.storage.local.get([
     WALLPAPER_UNPLAYED_QUEUE_KEY,
-    WALLPAPER_PLAYED_PATHS_KEY
+    WALLPAPER_PLAYED_PATHS_KEY,
+    WALLPAPER_LAST_PATH_KEY
   ]);
   const unplayedPathList = Array.isArray(result[WALLPAPER_UNPLAYED_QUEUE_KEY])
     ? result[WALLPAPER_UNPLAYED_QUEUE_KEY]
@@ -343,21 +382,35 @@ async function reserveWallpaperCandidate(attemptedPathSet) {
   const playedPathList = Array.isArray(result[WALLPAPER_PLAYED_PATHS_KEY])
     ? result[WALLPAPER_PLAYED_PATHS_KEY]
     : [];
+  const previousPath = currentPath ?? result[WALLPAPER_LAST_PATH_KEY];
   const replayCandidateList = playedPathList.filter(path => (
-    path !== currentPath && !attemptedPathSet.has(path)
+    path !== previousPath && !attemptedPathSet.has(path)
   ));
 
   if (replayCandidateList.length && Math.random() < WALLPAPER_REVISIT_PROBABILITY) {
+    const path = randomItem(replayCandidateList);
+    await chrome.storage.local.set({
+      [WALLPAPER_UNPLAYED_QUEUE_KEY]: unplayedPathList,
+      [WALLPAPER_PLAYED_PATHS_KEY]: playedPathList,
+      [WALLPAPER_LAST_PATH_KEY]: path
+    });
     return {
-      path: randomItem(replayCandidateList),
+      path,
       isReplay: true
     };
   }
 
-  const nextPath = unplayedPathList.find(path => path !== currentPath && !attemptedPathSet.has(path))
+  const nextPath = unplayedPathList.find(path => path !== previousPath && !attemptedPathSet.has(path))
     ?? (!replayCandidateList.length ? unplayedPathList.find(path => !attemptedPathSet.has(path)) : null);
   if (!nextPath) {
-    return replayCandidateList.length ? { path: randomItem(replayCandidateList), isReplay: true } : null;
+    if (!replayCandidateList.length) return null;
+    const path = randomItem(replayCandidateList);
+    await chrome.storage.local.set({
+      [WALLPAPER_UNPLAYED_QUEUE_KEY]: unplayedPathList,
+      [WALLPAPER_PLAYED_PATHS_KEY]: playedPathList,
+      [WALLPAPER_LAST_PATH_KEY]: path
+    });
+    return { path, isReplay: true };
   }
 
   const nextUnplayedPathList = unplayedPathList.filter(path => path !== nextPath);
@@ -367,7 +420,8 @@ async function reserveWallpaperCandidate(attemptedPathSet) {
 
   await chrome.storage.local.set({
     [WALLPAPER_UNPLAYED_QUEUE_KEY]: nextUnplayedPathList,
-    [WALLPAPER_PLAYED_PATHS_KEY]: nextPlayedPathList
+    [WALLPAPER_PLAYED_PATHS_KEY]: nextPlayedPathList,
+    [WALLPAPER_LAST_PATH_KEY]: nextPath
   });
 
   return {
@@ -520,8 +574,7 @@ function isUnavailableWallpaperError(error) {
     || error?.message?.startsWith('Image failed to load:');
 }
 
-async function resolveWallpaperUrl(relativePath) {
-  const handle = await getWallpaperDirectoryHandle();
+async function resolveWallpaperUrl(relativePath, handle = null) {
   if (handle) {
     const file = await getFileFromRelativePath(handle, relativePath);
     return URL.createObjectURL(file);
@@ -629,56 +682,90 @@ async function getFileFromRelativePath(rootHandle, relativePath) {
   return fileHandle.getFile();
 }
 
-function preloadWallpaper(fileUrl) {
-  return new Promise((resolve, reject) => {
-    const img = new Image();
-    img.onload = async () => {
-      try {
-        if (typeof img.decode === 'function') {
-          await img.decode();
-        }
-      } catch (error) {
-        console.warn('Wallpaper decode skipped:', error);
-      }
-      resolve();
-    };
-    img.onerror = () => reject(new Error(`Image failed to load: ${fileUrl}`));
-    img.src = fileUrl;
-  });
-}
-
-function applyWallpaper(fileUrl) {
+async function applyWallpaper(fileUrl) {
   const nextIndex = activeWallpaperIndex === 0 ? 1 : 0;
   const currentWallpaperEl = wallpaperElementList[activeWallpaperIndex];
   const nextWallpaperEl = wallpaperElementList[nextIndex];
-
-  if (currentWallpaperUrl && currentWallpaperUrl.startsWith('blob:') && currentWallpaperUrl !== fileUrl) {
-    URL.revokeObjectURL(currentWallpaperUrl);
+  const targetEl = hasAppliedWallpaper ? nextWallpaperEl : currentWallpaperEl;
+  targetEl.classList.remove('is-visible', 'is-entering');
+  targetEl.src = fileUrl;
+  try {
+    // Decode the actual displayed image, rather than a disposable preload Image followed by a CSS reload.
+    await targetEl.decode();
+  } catch {
+    targetEl.removeAttribute('src');
+    throw new Error(`Image failed to load: ${fileUrl}`);
   }
 
-  currentWallpaperUrl = fileUrl;
-  nextWallpaperEl.style.backgroundImage = `url("${fileUrl}")`;
-  nextWallpaperEl.classList.remove('is-visible', 'is-exiting');
-  currentWallpaperEl.classList.remove('is-exiting');
-
-  if (!hasAppliedWallpaper) {
-    currentWallpaperEl.style.backgroundImage = `url("${fileUrl}")`;
-    currentWallpaperEl.classList.add('is-visible');
+  if (!hasAppliedWallpaper || !currentWallpaperEl.naturalWidth) {
+    targetEl.classList.add('is-visible');
+    if (targetEl !== currentWallpaperEl) {
+      currentWallpaperEl.classList.remove('is-visible');
+      currentWallpaperEl.removeAttribute('src');
+      activeWallpaperIndex = nextIndex;
+    }
+    currentWallpaperUrl = fileUrl;
     hasAppliedWallpaper = true;
     document.documentElement.style.background = FALLBACK_BG;
     return;
   }
 
-  requestAnimationFrame(() => {
-    requestAnimationFrame(() => {
-      nextWallpaperEl.classList.add('is-visible');
-      currentWallpaperEl.classList.add('is-exiting');
-      currentWallpaperEl.classList.remove('is-visible');
-      activeWallpaperIndex = nextIndex;
+  const previousUrl = currentWallpaperUrl;
+  // Keep the old image fully opaque underneath; fading both layers exposes the page background.
+  currentWallpaperEl.style.zIndex = '0';
+  nextWallpaperEl.style.zIndex = '1';
+  nextWallpaperEl.classList.add('is-entering');
 
-      document.documentElement.style.background = FALLBACK_BG;
-    });
+  await new Promise(resolve => {
+    requestAnimationFrame(() => requestAnimationFrame(resolve));
   });
+
+  await new Promise(resolve => {
+    let timer;
+    const finish = () => {
+      clearTimeout(timer);
+      nextWallpaperEl.removeEventListener('transitionend', onTransitionEnd);
+      resolve();
+    };
+    const onTransitionEnd = event => {
+      if (event.target === nextWallpaperEl && event.propertyName === 'opacity') finish();
+    };
+    nextWallpaperEl.addEventListener('transitionend', onTransitionEnd);
+    nextWallpaperEl.classList.add('is-visible');
+    // A hidden tab or disabled transition may not dispatch transitionend.
+    const duration = parseFloat(getComputedStyle(nextWallpaperEl).transitionDuration) * 1000 || 0;
+    timer = setTimeout(finish, duration + 100);
+  });
+
+  // Finish the incoming layer before clearing the old one, including the timeout path.
+  nextWallpaperEl.classList.remove('is-entering');
+  currentWallpaperEl.classList.remove('is-visible');
+  currentWallpaperEl.removeAttribute('src');
+  activeWallpaperIndex = nextIndex;
+  currentWallpaperUrl = fileUrl;
+  if (previousUrl?.startsWith('blob:') && previousUrl !== fileUrl) {
+    URL.revokeObjectURL(previousUrl);
+  }
+}
+
+function scheduleWallpaperPreview(path, fileUrl) {
+  const image = wallpaperElementList[activeWallpaperIndex];
+  const save = () => {
+    if (currentPath !== path || image.src !== fileUrl || !image.naturalWidth) return;
+    try {
+      const scale = Math.min(1, 1280 / image.naturalWidth, 720 / image.naturalHeight);
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
+      canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
+      canvas.getContext('2d').drawImage(image, 0, 0, canvas.width, canvas.height);
+      const preview = JSON.stringify({ path, image: canvas.toDataURL('image/webp', 0.75) });
+      if (preview.length <= 512 * 1024) localStorage.setItem('wallpaperStartupPreview', preview);
+    } catch {
+      // A full/disabled cache does not affect displaying the original image.
+    }
+  };
+  if (typeof requestIdleCallback === 'function') requestIdleCallback(save, { timeout: 1500 });
+  else setTimeout(save, 200);
 }
 
 dislikeBtn.onclick = async () => {
@@ -734,13 +821,40 @@ rescanBtn.onclick = async () => {
   } finally {
     wallpaperOperationRunning = false;
     rescanBtn.disabled = false;
+    flushWallpaperRefresh();
   }
 };
 
-document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible' && hasAppliedWallpaper && !mainEl.hidden) {
+function requestWallpaperRefresh() {
+  wallpaperRefreshPending = true;
+  flushWallpaperRefresh();
+}
+
+function flushWallpaperRefresh() {
+  if (!wallpaperRefreshPending || wallpaperOperationRunning || wallpaperRefreshTimer
+    || document.visibilityState !== 'visible' || mainEl.hidden) return;
+  // Coalesce the explicit reuse notification and its visibility event into one switch.
+  wallpaperRefreshTimer = setTimeout(() => {
+    wallpaperRefreshTimer = null;
+    if (document.visibilityState !== 'visible' || mainEl.hidden || wallpaperOperationRunning) return;
+    wallpaperRefreshPending = false;
     showMain();
+  }, 80);
+}
+
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && wallpaperInitialized && hasAppliedWallpaper && !mainEl.hidden) {
+    requestWallpaperRefresh();
   }
+});
+
+chrome.tabs.getCurrent().then(tab => { wallpaperTabId = tab?.id; });
+chrome.runtime.onMessage.addListener((message, sender, respond) => {
+  if (sender.id !== chrome.runtime.id || message?.type !== 'WALLPAPER_REFRESH'
+    || message.tabId !== wallpaperTabId) return false;
+  requestWallpaperRefresh();
+  respond({ ok: true });
+  return false;
 });
 
 settingsBtn.onclick = () => {
@@ -797,15 +911,5 @@ function updateSetupActions() {
   restoreBtn.hidden = !needsPermissionRestore;
 }
 
-chrome.storage.local.get(['files', WALLPAPER_FAILURE_COUNT_KEY], result => {
-  const { files: fileList } = result;
-  updateSetupActions();
-
-  if (fileList?.length) {
-    showMain();
-    return;
-  }
-
-  mainEl.hidden = true;
-  setupEl.hidden = false;
-});
+updateSetupActions();
+showMain();

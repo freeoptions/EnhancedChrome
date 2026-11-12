@@ -17,7 +17,6 @@ async function syncWindow(windowId) {
       const plan = planNewTabCleanup(tabList, extensionBase);
       if (!getSettings().singleNewTabEnabled || !plan.removeIdList.length) continue;
       // 每次关闭前重新读取，避免把已经导航离开首页的标签页关闭。
-      let removedActive = false;
       for (const id of plan.removeIdList) {
         try {
           const [tab, survivor] = await Promise.all([chrome.tabs.get(id), chrome.tabs.get(plan.keepId)]);
@@ -28,17 +27,22 @@ async function syncWindow(windowId) {
           }
           if (tab.windowId !== windowId) continue;
           if (tab.pinned || !isOwnNewTabUrl(tab.pendingUrl || tab.url, extensionBase)) continue;
+          if (tab.active) {
+            // Notify explicitly: a very short-lived duplicate may never hide the retained page.
+            await chrome.runtime.sendMessage({ type: 'WALLPAPER_REFRESH', tabId: plan.keepId })
+              .catch(() => {}); // A retained page that is still starting loads its first wallpaper itself.
+            // Activate first so removal doesn't briefly select an unrelated page.
+            await chrome.tabs.update(plan.keepId, { active: true });
+          }
+          const closingTab = await chrome.tabs.get(id);
+          if (closingTab.windowId !== windowId || closingTab.pinned
+            || !isOwnNewTabUrl(closingTab.pendingUrl || closingTab.url, extensionBase)) continue;
           await chrome.tabs.remove(id);
-          removedActive ||= tab.active;
         } catch (error) {
           if (!error.message.includes('No tab with id')) throw error;
           pendingWindowSet.add(windowId);
           break;
         }
-      }
-      if (removedActive) {
-        try { await chrome.tabs.update(plan.keepId, { active: true }); }
-        catch (error) { if (!error.message.includes('No tab with id')) throw error; }
       }
     }
   } catch (error) { console.error('新标签页去重失败', error); }
