@@ -23,7 +23,8 @@ export function startTagSync(enqueue) {
       const cloudMap = await chrome.storage.sync.get(null);
       const meta = cloudMap[SYNC_META_KEY];
       const nodeList = flattenTree(await chrome.bookmarks.getTree());
-      if (state.dirty || (!meta && data.tags.length && !state.revision)) {
+      // 同步区丢失快照时，已有同步版本不能阻止完整本地标签重新提交。
+      if (state.dirty || (!meta && data.tags.length)) {
         const nextMap = await encodeTagSnapshot(createTagSnapshot(data, nodeList));
         checkSyncQuota(cloudMap, nextMap);
         await chrome.storage.sync.set(nextMap);
@@ -45,11 +46,11 @@ export function startTagSync(enqueue) {
         if (!state.revision && data.tags.length) update.tagDataBeforeSync = data;
         await chrome.storage.local.set(update);
         await status('received', { pendingCount: result.pendingCount });
-      } else if (!meta && state.revision) {
+      } else if (!meta) {
         await status('waiting');
       } else {
         const previous = (await chrome.storage.local.get('tagSyncLastSuccess')).tagSyncLastSuccess;
-        await status(previous?.state ?? 'ready', previous ?? {});
+        await status(previous?.state ?? 'unchanged', previous ?? {});
       }
       const current = (await chrome.storage.local.get('tagSyncStatus')).tagSyncStatus;
       if (['submitted', 'received'].includes(current.state)) await chrome.storage.local.set({ tagSyncLastSuccess: current });
