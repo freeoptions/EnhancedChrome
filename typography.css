@@ -17,3 +17,11 @@ input::placeholder, textarea::placeholder {
   font-family: inherit;
   font-size: inherit;
 }
+
+* {
+  scrollbar-width: none;
+}
+
+*::-webkit-scrollbar {
+  display: none;
+}

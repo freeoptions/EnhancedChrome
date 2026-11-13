@@ -1,5 +1,6 @@
 const bookmarkCommandSet = new Set([
   'createTag', 'renameTag', 'deleteTag', 'setBookmarkTags', 'addBookmarkTags',
+  'deleteBookmark', 'undoDeleteBookmark', 'getBookmarkUndoState',
   'syncTags', 'exportBackup', 'importBackup', 'retryPending', 'resolvePending', 'updateSettings'
 ]);
 const dedupeCommandSet = new Set([

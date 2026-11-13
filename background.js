@@ -20,6 +20,11 @@ async function readData() {
   return (await chrome.storage.local.get('tagData')).tagData ?? emptyData();
 }
 
+async function readBookmarkUndoState() {
+  const state = (await chrome.storage.session.get('bookmarkUndoState')).bookmarkUndoState;
+  return state?.expiresAt > Date.now() ? state : { recordList: [], expiresAt: 0 };
+}
+
 chrome.action.onClicked.addListener(openManager);
 
 chrome.runtime.onMessage.addListener((command, sender, respond) => {
@@ -33,7 +38,60 @@ chrome.runtime.onMessage.addListener((command, sender, respond) => {
     if (command.type === 'updateSettings') {
       return { ok: true, settings: await saveSettings(command.patch) };
     }
+    if (command.type === 'getBookmarkUndoState') {
+      const state = await readBookmarkUndoState();
+      const bookmark = state.recordList.at(-1)?.bookmark;
+      return { ok: true, undoCount: state.recordList.length, undoExpiresAt: state.expiresAt, undoTitle: bookmark?.title || bookmark?.url || '' };
+    }
     let data = await readData();
+    if (command.type === 'deleteBookmark') {
+      const [bookmark] = await chrome.bookmarks.get(command.bookmarkId);
+      if (!bookmark.url) throw new Error('只能删除网页书签');
+      const previousState = await readBookmarkUndoState();
+      const state = {
+        recordList: [...previousState.recordList, { bookmark, tagIdList: [...(data.bookmarks[bookmark.id] ?? [])] }],
+        expiresAt: Date.now() + 10000
+      };
+      // 先保留恢复信息，再删除真实书签；删除失败时恢复原撤回记录。
+      await chrome.storage.session.set({ bookmarkUndoState: state });
+      try { await chrome.bookmarks.remove(bookmark.id); }
+      catch (error) {
+        await chrome.storage.session.set({ bookmarkUndoState: previousState });
+        throw error;
+      }
+      return { ok: true, undoCount: state.recordList.length, undoExpiresAt: state.expiresAt, undoTitle: bookmark.title || bookmark.url };
+    }
+    if (command.type === 'undoDeleteBookmark') {
+      const state = await readBookmarkUndoState();
+      const record = state.recordList.at(-1);
+      if (!record) throw new Error('撤回时间已过');
+      let restored;
+      if (record.restoredBookmarkId) {
+        [restored] = await chrome.bookmarks.get(record.restoredBookmarkId);
+      } else {
+        let parent;
+        try { [parent] = await chrome.bookmarks.get(record.bookmark.parentId); }
+        catch { throw new Error('原文件夹已不存在，无法撤回；删除记录已保留'); }
+        if (parent.url) throw new Error('原位置不是文件夹，无法撤回；删除记录已保留');
+        const childList = await chrome.bookmarks.getChildren(parent.id);
+        restored = await chrome.bookmarks.create({
+          parentId: parent.id, index: Math.min(record.bookmark.index, childList.length),
+          title: record.bookmark.title, url: record.bookmark.url
+        });
+        record.restoredBookmarkId = restored.id;
+        // 后续标签保存失败时，重试复用已恢复的书签，避免重复创建。
+        await chrome.storage.session.set({ bookmarkUndoState: state });
+      }
+      const validTagSet = new Set(data.tags.map(tag => tag.id));
+      const tagIdList = record.tagIdList.filter(id => validTagSet.has(id));
+      delete data.bookmarks[record.bookmark.id];
+      if (tagIdList.length) data.bookmarks[restored.id] = tagIdList;
+      await tagSync.saveData(data);
+      state.recordList.pop();
+      await chrome.storage.session.set({ bookmarkUndoState: state });
+      const nextBookmark = state.recordList.at(-1)?.bookmark;
+      return { ok: true, bookmarkId: restored.id, undoCount: state.recordList.length, undoExpiresAt: state.expiresAt, undoTitle: nextBookmark?.title || nextBookmark?.url || '' };
+    }
     if (command.type === 'addBookmarkTags') {
       const selectedIdSet = new Set(command.bookmarkIdList);
       const bookmarkList = getSelectedBookmarkList(await chrome.bookmarks.getTree(), selectedIdSet);

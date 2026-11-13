@@ -11,6 +11,9 @@ let selectedTagSet = new Set();
 let tagFilterMode = 'multiple';
 const expandedSet = new Set();
 let editingBookmarkId = null;
+let selectedBookmarkId = null;
+let bookmarkMutationRunning = false;
+let bookmarkUndoTimer;
 let renamingTagId = null;
 let selectionMode = false;
 let bulkEditing = false;
@@ -56,6 +59,65 @@ function notify(text) {
   $('toast').hidden = false;
   toastTimer = setTimeout(() => { $('toast').hidden = true; }, 2400);
 }
+
+function updateBookmarkUndo(result) {
+  clearTimeout(bookmarkUndoTimer);
+  const message = result.undoCount > 1
+    ? `已删除${result.undoCount}条书签，最近删除“${result.undoTitle}”`
+    : `已删除“${result.undoTitle}”`;
+  $('bookmark-undo-text').textContent = message;
+  $('bookmark-undo-text').title = message;
+  function updateCountdown() {
+    const remaining = result.undoExpiresAt - Date.now();
+    $('bookmark-undo').hidden = !result.undoCount || remaining <= 0;
+    if ($('bookmark-undo').hidden) {
+      $('bookmark-undo-countdown').textContent = '';
+      return;
+    }
+    $('bookmark-undo-countdown').textContent = `${Math.ceil(remaining / 1000)}秒`;
+    bookmarkUndoTimer = setTimeout(updateCountdown, Math.min(1000, remaining));
+  }
+  updateCountdown();
+}
+
+function selectBookmark(id) {
+  selectedBookmarkId = id;
+  for (const row of document.querySelectorAll('.bookmark-item')) {
+    const selected = row.dataset.bookmarkId === id;
+    row.classList.toggle('is-selected', selected);
+    if (selected) row.setAttribute('aria-current', 'true');
+    else row.removeAttribute('aria-current');
+  }
+}
+
+async function deleteBookmark(id) {
+  if (bookmarkMutationRunning) return;
+  bookmarkMutationRunning = true;
+  try {
+    const result = await command({ type: 'deleteBookmark', bookmarkId: id });
+    if (selectedBookmarkId === id) selectedBookmarkId = null;
+    updateBookmarkUndo(result);
+    await refresh();
+  } catch (error) { showError(error); }
+  finally { bookmarkMutationRunning = false; }
+}
+
+$('undo-bookmark').addEventListener('click', async () => {
+  if (bookmarkMutationRunning) return;
+  bookmarkMutationRunning = true;
+  $('undo-bookmark').disabled = true;
+  try {
+    const result = await command({ type: 'undoDeleteBookmark' });
+    selectedBookmarkId = result.bookmarkId;
+    updateBookmarkUndo(result);
+    await refresh();
+    if (!result.undoCount) notify('书签已恢复');
+  } catch (error) { showError(error); }
+  finally {
+    bookmarkMutationRunning = false;
+    $('undo-bookmark').disabled = false;
+  }
+});
 
 async function command(payload) {
   const result = await chrome.runtime.sendMessage(payload);
@@ -266,6 +328,7 @@ function renderBookmarks() {
   $('result-count').textContent = `${visibleList.length}项`;
   const pageResult = getBookmarkPage(visibleList, currentPage);
   pageNodeList = pageResult.itemList;
+  if (!pageNodeList.some(node => node.id === selectedBookmarkId)) selectedBookmarkId = null;
   updateSelectionToolbar();
   currentPage = pageResult.page;
   $('pagination').hidden = pageResult.totalPages <= 1;
@@ -294,11 +357,26 @@ function renderBookmarks() {
       row.append(open);
     } else {
       row.classList.add('bookmark-item');
+      row.dataset.bookmarkId = node.id;
+      row.tabIndex = 0;
+      if (node.id === selectedBookmarkId) {
+        row.classList.add('is-selected');
+        row.setAttribute('aria-current', 'true');
+      }
       row.addEventListener('click', event => {
-        if (event.target.closest('a, button, input')) return;
+        if (event.target.closest('button, input')) return;
         if (selectionMode) row.querySelector('.selection-checkbox').click();
-        else chrome.tabs.create({ url: node.url }).catch(showError);
+        else {
+          selectBookmark(node.id);
+          row.focus({ preventScroll: true });
+        }
       });
+      row.addEventListener('dblclick', event => {
+        if (selectionMode || event.target.closest('button, input')) return;
+        event.preventDefault();
+        chrome.tabs.create({ url: node.url }).catch(showError);
+      });
+      row.addEventListener('focus', () => { if (!selectionMode) selectBookmark(node.id); });
       let hostname = '';
       try { hostname = new URL(node.url).hostname; } catch { /* Chrome允许部分特殊书签地址。 */ }
       row.append(element('span', 'site-icon', hostname ? hostname.replace(/^www\./, '')[0].toUpperCase() : '↗'));
@@ -308,8 +386,6 @@ function renderBookmarks() {
       link.title = `${node.title}\n${node.url}`;
       link.addEventListener('click', event => {
         event.preventDefault();
-        event.stopPropagation();
-        chrome.tabs.create({ url: node.url }).catch(showError);
       });
       info.append(link, element('div', 'bookmark-url', node.url));
       row.append(info);
@@ -323,7 +399,11 @@ function renderBookmarks() {
       const editButton = button('⋮', 'icon-button', () => openEdit(node));
       editButton.title = '编辑名称和网址';
       editButton.setAttribute('aria-label', `编辑“${node.title || node.url}”`);
-      row.append(badges, tagButton, editButton);
+      const deleteButton = button('', 'icon-button delete-bookmark', () => deleteBookmark(node.id));
+      deleteButton.title = '删除书签';
+      deleteButton.setAttribute('aria-label', `删除“${node.title || node.url}”`);
+      deleteButton.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7m4-7v7"/></svg>';
+      row.append(badges, tagButton, editButton, deleteButton);
     }
     fragment.append(row);
   }
@@ -550,7 +630,23 @@ for (const [id, direction] of [['previous-page', -1], ['next-page', 1]]) {
   });
 }
 document.querySelectorAll('.close-dialog').forEach(node => node.addEventListener('click', () => node.closest('dialog').close()));
+document.querySelectorAll('dialog').forEach(dialog => {
+  dialog.addEventListener('click', event => {
+    if (event.target !== dialog) return;
+    const bounds = dialog.getBoundingClientRect();
+    if (event.clientX < bounds.left || event.clientX > bounds.right
+      || event.clientY < bounds.top || event.clientY > bounds.bottom) dialog.close();
+  });
+});
+
 document.addEventListener('keydown', event => {
+  if (event.key === 'Delete' && !event.repeat && !event.ctrlKey && !event.metaKey && !event.altKey
+    && !selectionMode && selectedBookmarkId && !document.querySelector('dialog[open]')
+    && !event.target.isContentEditable && !event.target.closest('input, textarea, select, button')) {
+    event.preventDefault();
+    deleteBookmark(selectedBookmarkId);
+    return;
+  }
   if ((event.ctrlKey || event.metaKey) && !event.altKey && ['f', 'k'].includes(event.key.toLowerCase())) {
     event.preventDefault();
     document.querySelectorAll('dialog[open]').forEach(dialog => dialog.close());
@@ -688,4 +784,5 @@ chrome.storage.onChanged.addListener((changes, area) => {
   if (area === 'local' && changes.tagData) applyTagData(changes.tagData.newValue ?? emptyData());
 });
 refresh();
+command({ type: 'getBookmarkUndoState' }).then(updateBookmarkUndo).catch(showError);
 if (new URLSearchParams(location.search).get('settings') === '1') $('settings').click();
