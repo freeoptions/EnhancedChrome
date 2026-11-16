@@ -23,7 +23,7 @@
     <input id="backup-file" type="file" accept=".json,application/json" hidden>
   </header>
   <div class="layout">
-    <aside id="sidebar" aria-label="书签文件夹"><nav id="folders"></nav><div class="sidebar-note tag-sync-panel"><div id="tag-sync-status" data-state="syncing" role="status" aria-live="polite"><span class="tag-sync-indicator" aria-hidden="true"></span><span id="tag-sync-text">正在检查标签同步…</span></div><p id="tag-sync-detail"></p><button id="retry-tag-sync" class="text-button" hidden>重试同步</button></div></aside>
+    <aside id="sidebar" aria-label="书签文件夹"><div class="folder-actions" role="group" aria-label="文件夹展开控制"><button id="expand-folders" class="text-button" aria-controls="folders">展开全部</button><button id="collapse-folders" class="text-button" aria-controls="folders">收起全部</button></div><nav id="folders"></nav><div class="sidebar-note tag-sync-panel"><div id="tag-sync-status" data-state="syncing" role="status" aria-live="polite"><span class="tag-sync-indicator" aria-hidden="true"></span><span id="tag-sync-text">正在检查标签同步…</span><span id="tag-sync-time" hidden></span></div><p id="tag-sync-detail"></p><button id="retry-tag-sync" class="text-button" hidden>重试同步</button></div></aside>
     <div id="sidebar-resizer" role="separator" tabindex="0" aria-label="调整文件夹侧栏宽度" aria-orientation="vertical" aria-controls="sidebar" aria-valuemin="140" aria-valuemax="600" aria-valuenow="280" title="左右拖动调整宽度，或按左右方向键"></div>
     <main>
       <section class="filter-panel" aria-label="标签筛选">
@@ -33,7 +33,7 @@
       <div class="list-heading"><h2 id="folder-title">全部书签</h2><span id="result-count" class="muted"></span><span id="scope-hint" class="muted"></span><button id="bulk-tags" class="text-button">批量打标签</button>
       <div id="selection-toolbar" hidden>
         <span id="selection-count" role="status">已选0条书签</span>
-        <button id="select-page" class="text-button">全选本页</button>
+        <button id="select-visible" class="text-button">全选当前列表</button>
         <button id="clear-selection" class="text-button">取消全选</button>
         <button id="label-selection" class="primary-button" disabled>设置标签</button>
         <button id="exit-selection" class="text-button">退出批量</button>
@@ -49,11 +49,6 @@
         <div class="pending-pagination"><button id="pending-previous" class="text-button">上一页</button><span id="pending-page-info" class="muted"></span><button id="pending-next" class="text-button">下一页</button></div>
       </details>
       <section id="bookmarks" class="bookmark-list" aria-label="收藏列表"><p class="empty">正在读取书签…</p></section>
-      <nav id="pagination" class="pagination" aria-label="书签分页" hidden>
-        <span id="page-info" class="muted" aria-live="polite"></span>
-        <button id="previous-page" class="text-button">上一页</button>
-        <button id="next-page" class="text-button">下一页</button>
-      </nav>
     </main>
   </div>
   <dialog id="tag-dialog" aria-labelledby="tag-dialog-title">

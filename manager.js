@@ -1,11 +1,17 @@
 import { clampSidebarWidth, emptyData, filterBookmarks, flattenTree, getBookmarkPage, getSelectedBookmarkList } from './core.js';
 import { bookmarkCandidates, exportFilename, validateBackup } from './backup.js';
 import './tag-sync-ui.js';
-import { getBookmarkMoveDestination } from './bookmark-move.js';
+import { canDragBookmarkNode, getBookmarkBatchMovePlan, getBookmarkDragScrollDelta, getBookmarkMoveDestination } from './bookmark-move.js';
+import { BookmarkRenderQueue } from './bookmark-render-queue.js';
+import { getBookmarkClickSelection, getRemainingSingleBookmarkId } from './bookmark-selection.js';
 
 const $ = id => document.getElementById(id);
 let treeList = [];
 let flatList = [];
+let bookmarkNodeMap = new Map();
+const bookmarkRowMap = new Map();
+const bookmarkRowSignatureMap = new Map();
+const folderBookmarkListMap = new Map();
 let data = emptyData();
 let folderId = null;
 let selectedTagSet = new Set();
@@ -13,19 +19,20 @@ let tagFilterMode = 'multiple';
 const expandedSet = new Set();
 let editingBookmarkId = null;
 let selectedBookmarkId = null;
+let bookmarkSelectionAnchorId = null;
 let bookmarkMutationRunning = false;
 let bookmarkUndoTimer;
 let renamingTagId = null;
 let selectionMode = false;
+let previousSelectionCount = 0;
 let bulkEditing = false;
 const selectedBookmarkSet = new Set();
 let bulkBookmarkIdList = [];
-let pageNodeList = [];
+let visibleNodeList = [];
 let draftTagSet = new Set();
 let editingNode = null;
 let toastTimer;
 let refreshVersion = 0;
-let currentPage = 1;
 let dataVersion = 0;
 let tagDataJSON = JSON.stringify(data);
 let searchTimer;
@@ -35,6 +42,16 @@ let sidebarWidth = 280;
 let dragPointerId = null;
 let dragOffset = 0;
 let draggedNodeId = null;
+let draggedBookmarkIdList = [];
+let bookmarkDragPoint = null;
+let bookmarkDragScrollFrame = null;
+let bookmarkDragScrollTime = null;
+let bookmarkDropTarget = null;
+let bookmarkRenderQueue;
+let bookmarkRowFactory;
+let bookmarkRenderFrame;
+let bookmarkRowHeight = 60;
+let bookmarkViewKey = '';
 
 function element(tag, className, text) {
   const node = document.createElement(tag);
@@ -83,13 +100,13 @@ function updateBookmarkUndo(result) {
 }
 
 function selectBookmark(id) {
+  const previousRow = bookmarkRowMap.get(selectedBookmarkId);
+  previousRow?.classList.remove('is-selected');
+  previousRow?.removeAttribute('aria-current');
   selectedBookmarkId = id;
-  for (const row of document.querySelectorAll('.bookmark-item')) {
-    const selected = row.dataset.bookmarkId === id;
-    row.classList.toggle('is-selected', selected);
-    if (selected) row.setAttribute('aria-current', 'true');
-    else row.removeAttribute('aria-current');
-  }
+  const row = bookmarkRowMap.get(id);
+  row?.classList.add('is-selected');
+  row?.setAttribute('aria-current', 'true');
 }
 
 async function deleteBookmark(id) {
@@ -194,63 +211,150 @@ function renderPending() {
 }
 
 function clearBookmarkDrop() {
-  for (const target of document.querySelectorAll('[data-drop-position]')) delete target.dataset.dropPosition;
+  if (bookmarkDropTarget) delete bookmarkDropTarget.dataset.dropPosition;
+  bookmarkDropTarget = null;
 }
 
+function stopBookmarkDragScroll() {
+  cancelAnimationFrame(bookmarkDragScrollFrame);
+  bookmarkDragScrollFrame = null;
+  bookmarkDragScrollTime = null;
+  bookmarkDragPoint = null;
+}
+
+function scrollDuringBookmarkDrag(time) {
+  bookmarkDragScrollFrame = null;
+  if (!draggedNodeId || !bookmarkDragPoint || bookmarkMutationRunning) {
+    stopBookmarkDragScroll();
+    return;
+  }
+  const sidebar = $('sidebar');
+  const main = document.querySelector('main');
+  let scrollTarget = null;
+  for (const area of [sidebar, main]) {
+    const bounds = area.getBoundingClientRect();
+    if (bookmarkDragPoint.x >= bounds.left && bookmarkDragPoint.x <= bounds.right
+      && bookmarkDragPoint.y >= bounds.top && bookmarkDragPoint.y <= bounds.bottom) {
+      scrollTarget = area === sidebar ? $('folders') : main;
+      break;
+    }
+  }
+  if (!scrollTarget) {
+    stopBookmarkDragScroll();
+    return;
+  }
+  const bounds = scrollTarget.getBoundingClientRect();
+  const delta = getBookmarkDragScrollDelta(bookmarkDragPoint.y, bounds.top, bounds.bottom,
+    bookmarkDragScrollTime === null ? 16 : time - bookmarkDragScrollTime);
+  const previousTop = scrollTarget.scrollTop;
+  scrollTarget.scrollTop += delta;
+  if (!delta || scrollTarget.scrollTop === previousTop) {
+    stopBookmarkDragScroll();
+    return;
+  }
+  clearBookmarkDrop();
+  bookmarkDragScrollTime = time;
+  bookmarkDragScrollFrame = requestAnimationFrame(scrollDuringBookmarkDrag);
+}
+
+document.addEventListener('dragover', event => {
+  if (!draggedNodeId) return;
+  bookmarkDragPoint = { x: event.clientX, y: event.clientY };
+  if (bookmarkDragScrollFrame === null) bookmarkDragScrollFrame = requestAnimationFrame(scrollDuringBookmarkDrag);
+});
+document.addEventListener('dragleave', event => {
+  if (!event.relatedTarget && (event.clientX <= 0 || event.clientX >= innerWidth
+    || event.clientY <= 0 || event.clientY >= innerHeight)) stopBookmarkDragScroll();
+});
+document.addEventListener('drop', stopBookmarkDragScroll);
+document.addEventListener('dragend', stopBookmarkDragScroll);
+window.addEventListener('blur', stopBookmarkDragScroll);
+
 function bindBookmarkDrag(row, node, allowSort = false) {
-  row.draggable = !selectionMode && !node.unmodifiable && !!node.parentId
-    && !!flatList.find(parent => parent.id === node.parentId)?.parentId && !node.folderType;
+  row.draggable = canDragBookmarkNode(bookmarkNodeMap, node.id, selectionMode, selectedBookmarkSet);
   row.addEventListener('dragstart', event => {
     if (!row.draggable || bookmarkMutationRunning || event.target.closest('input, .text-button, .icon-button, .folder-toggle')) {
       event.preventDefault();
       return;
     }
     draggedNodeId = node.id;
+    draggedBookmarkIdList = selectionMode ? [...selectedBookmarkSet] : [node.id];
     event.dataTransfer.effectAllowed = 'move';
     event.dataTransfer.setData('application/x-enhanced-chrome-bookmark', node.id);
     row.classList.add('is-dragging');
   });
   row.addEventListener('dragend', () => {
+    stopBookmarkDragScroll();
     draggedNodeId = null;
+    draggedBookmarkIdList = [];
     row.classList.remove('is-dragging');
     clearBookmarkDrop();
   });
   function dropPosition(event) {
+    if (selectionMode) return node.url ? null : 'inside';
     const bounds = row.getBoundingClientRect();
     const ratio = (event.clientY - bounds.top) / bounds.height;
     if (!node.url && (!allowSort || (ratio >= .25 && ratio <= .75))) return 'inside';
     return allowSort ? (ratio < .5 ? 'before' : 'after') : null;
   }
+  function dropPlan(nodeMap, sourceIdList, position, bulkMove) {
+    if (bulkMove) return position === 'inside' ? getBookmarkBatchMovePlan(nodeMap, sourceIdList, node.id) : null;
+    const destination = getBookmarkMoveDestination(nodeMap, sourceIdList[0], node.id, position);
+    return destination ? [{ id: sourceIdList[0], ...destination }] : null;
+  }
   row.addEventListener('dragover', event => {
     clearBookmarkDrop();
-    if (!draggedNodeId || selectionMode || bookmarkMutationRunning) return;
+    if (!draggedNodeId || bookmarkMutationRunning) return;
     const position = dropPosition(event);
-    if (!getBookmarkMoveDestination(flatList, draggedNodeId, node.id, position)) return;
+    if (!dropPlan(bookmarkNodeMap, draggedBookmarkIdList, position, selectionMode)?.length) return;
     event.preventDefault();
     event.dataTransfer.dropEffect = 'move';
     row.dataset.dropPosition = position;
+    bookmarkDropTarget = row;
   });
   row.addEventListener('dragleave', event => {
     if (!row.contains(event.relatedTarget)) delete row.dataset.dropPosition;
   });
   row.addEventListener('drop', async event => {
-    const sourceId = draggedNodeId;
+    stopBookmarkDragScroll();
+    const sourceIdList = [...draggedBookmarkIdList];
+    const bulkMove = selectionMode;
     const position = dropPosition(event);
     clearBookmarkDrop();
-    if (!sourceId || selectionMode || bookmarkMutationRunning
-      || !getBookmarkMoveDestination(flatList, sourceId, node.id, position)) return;
+    if (!draggedNodeId || bookmarkMutationRunning
+      || !dropPlan(bookmarkNodeMap, sourceIdList, position, bulkMove)?.length) return;
     event.preventDefault();
     draggedNodeId = null;
+    draggedBookmarkIdList = [];
     bookmarkMutationRunning = true;
+    let moveList = [];
+    let movedCount = 0;
+    let failure = null;
     try {
-      const nextNodeList = flattenTree(await chrome.bookmarks.getTree());
-      const destination = getBookmarkMoveDestination(nextNodeList, sourceId, node.id, position);
-      if (!destination) throw new Error('书签位置已变化，请重新拖动');
-      await chrome.bookmarks.move(sourceId, destination);
+      const nextNodeMap = new Map(flattenTree(await chrome.bookmarks.getTree()).map(item => [item.id, item]));
+      moveList = dropPlan(nextNodeMap, sourceIdList, position, bulkMove);
+      if (!moveList?.length) throw new Error('书签位置已变化，请重新拖动');
+      for (const { id, ...destination } of moveList) {
+        await chrome.bookmarks.move(id, destination);
+        movedCount++;
+      }
+      if (position === 'inside') expandedSet.add(node.id);
+      if (bulkMove) {
+        selectedBookmarkId = null;
+        exitSelection();
+      }
+    } catch (error) {
+      failure = error;
+      if (bulkMove && movedCount > 0) {
+        selectedBookmarkSet.clear();
+        for (const item of moveList.slice(movedCount)) selectedBookmarkSet.add(item.id);
+      }
+    } finally {
       await refresh();
-      notify(position === 'inside' ? '已移入文件夹' : '顺序已更新');
-    } catch (error) { showError(error); }
-    finally { bookmarkMutationRunning = false; }
+      bookmarkMutationRunning = false;
+    }
+    if (failure) showError(movedCount ? new Error(`已移动${movedCount}条，${moveList.length - movedCount}条未移动：${failure.message}`) : failure);
+    else notify(bulkMove ? `已移动${movedCount}条书签至“${node.title}”` : position === 'inside' ? '已移入文件夹' : '顺序已更新');
   });
 }
 
@@ -277,9 +381,13 @@ function renderFolders() {
       toggle.setAttribute('aria-label', `${expandedSet.has(node.id) ? '折叠' : '展开'}${node.title}`);
       toggle.setAttribute('aria-expanded', String(expandedSet.has(node.id)));
     }
-    const select = button('', 'folder-button', () => {
+    const select = button('', 'folder-button', event => {
+      if (node.id && (event.ctrlKey || event.metaKey)) {
+        event.preventDefault();
+        toggleBookmarkSelection(node);
+        return;
+      }
       folderId = node.id;
-      currentPage = 1;
       renderFolders();
       renderBookmarks();
     });
@@ -287,9 +395,13 @@ function renderFolders() {
     if (folderId === node.id) select.setAttribute('aria-current', 'page');
     select.append(element('span', 'folder-icon'), element('span', '', node.title));
     line.append(toggle);
-    if (selectionMode && node.id) line.append(selectionCheckbox(node));
     line.append(select);
-    if (node.id) bindBookmarkDrag(line, node);
+    if (node.id) {
+      line.dataset.folderId = node.id;
+      bindBookmarkDrag(line, node, !!bookmarkNodeMap.get(node.parentId)?.parentId);
+      select.draggable = line.draggable;
+      if (select.draggable) select.title = `${node.title}\n拖动名称或图标移动文件夹，上下沿调整同级顺序，中央移入文件夹`;
+    }
     nav.append(line);
     if (expandedSet.has(node.id)) childFolderList.forEach(child => addFolder(child, depth + 1));
   }
@@ -297,7 +409,20 @@ function renderFolders() {
   for (const root of treeList) {
     for (const node of root.children ?? []) if (!node.url) addFolder(node, 0);
   }
+  updateFolderSelection();
 }
+
+$('expand-folders').addEventListener('click', () => {
+  expandedSet.clear();
+  for (const node of flatList) {
+    if (!node.url && node.children?.some(child => !child.url)) expandedSet.add(node.id);
+  }
+  renderFolders();
+});
+$('collapse-folders').addEventListener('click', () => {
+  expandedSet.clear();
+  renderFolders();
+});
 
 function applyTagFilterMode(mode) {
   tagFilterMode = mode === 'single' ? 'single' : 'multiple';
@@ -307,7 +432,6 @@ function applyTagFilterMode(mode) {
   $('filter-single').setAttribute('aria-pressed', String(tagFilterMode === 'single'));
   $('filter-multiple').setAttribute('aria-pressed', String(tagFilterMode === 'multiple'));
   $('filter-mode-hint').textContent = tagFilterMode === 'single' ? '同时只选一个标签' : '多选时同时包含';
-  currentPage = 1;
   renderFilters(); renderBookmarks();
 }
 
@@ -336,7 +460,7 @@ function renderFilters() {
   $('clear-tags').disabled = !selectedTagSet.size;
   const container = $('tag-filters');
   const all = button('全部', 'chip', () => {
-    selectedTagSet.clear(); currentPage = 1; renderFilters(); renderBookmarks();
+    selectedTagSet.clear(); renderFilters(); renderBookmarks();
   });
   all.setAttribute('aria-pressed', String(!selectedTagSet.size));
   container.replaceChildren(all);
@@ -356,7 +480,6 @@ function renderFilters() {
         if (tagFilterMode === 'single') selectedTagSet.clear();
         selectedTagSet.add(tag.id);
       }
-      currentPage = 1;
       updatePressed();
       renderBookmarks();
     });
@@ -375,7 +498,7 @@ function renderFilters() {
 
 function renderBookmarks() {
   const query = $('search').value;
-  const currentFolder = flatList.find(node => node.id === folderId);
+  const currentFolder = bookmarkNodeMap.get(folderId);
   if (folderId && !currentFolder) folderId = null;
   const globalTagFiltering = selectedTagSet.size > 0;
   const filtering = globalTagFiltering || query.trim().length > 0;
@@ -390,31 +513,55 @@ function renderBookmarks() {
     ? filterBookmarks(candidateList, data, selectedTagSet, query)
     : candidateList;
   $('result-count').textContent = `${visibleList.length}项`;
-  const pageResult = getBookmarkPage(visibleList, currentPage);
-  pageNodeList = pageResult.itemList;
-  if (!pageNodeList.some(node => node.id === selectedBookmarkId)) selectedBookmarkId = null;
+  visibleNodeList = visibleList;
+  const visibleIdSet = new Set(visibleList.map(node => node.id));
+  if (!visibleIdSet.has(selectedBookmarkId)) selectedBookmarkId = null;
   updateSelectionToolbar();
-  currentPage = pageResult.page;
-  $('pagination').hidden = pageResult.totalPages <= 1;
-  $('page-info').textContent = `第${currentPage} / ${pageResult.totalPages}页 · 每页100项`;
-  $('previous-page').disabled = currentPage === 1;
-  $('next-page').disabled = currentPage === pageResult.totalPages;
+  cancelAnimationFrame(bookmarkRenderFrame);
   const container = $('bookmarks');
-  container.replaceChildren();
+  const viewKey = JSON.stringify([folderId, query, [...selectedTagSet]]);
+  const sameView = viewKey === bookmarkViewKey && !!bookmarkRenderQueue;
+  const scrollAnchor = sameView ? getBookmarkScrollAnchor(container, visibleIdSet) : null;
+  if (!sameView) {
+    document.querySelector('main').scrollTop = 0;
+    bookmarkViewKey = viewKey;
+    bookmarkSelectionAnchorId = null;
+  }
+  clearBookmarkDrop();
+  const retainedList = sameView ? bookmarkRenderQueue.update(visibleNodeList) : [];
+  if (!sameView) bookmarkRenderQueue = new BookmarkRenderQueue(visibleNodeList);
+  if (!retainedList.length) {
+    bookmarkRowMap.clear();
+    bookmarkRowSignatureMap.clear();
+    container.replaceChildren();
+  }
+  container.style.minHeight = bookmarkRenderQueue.renderedCount < visibleNodeList.length
+    ? `${visibleNodeList.length * bookmarkRowHeight}px` : '';
   if (!visibleList.length) {
+    container.style.minHeight = '';
     container.append(element('p', 'empty', filtering ? '没有符合条件的书签\n试试减少标签或更换搜索关键词' : '此文件夹暂无书签'));
     return;
   }
-  const fragment = document.createDocumentFragment();
   const tagMap = new Map(data.tags.map(tag => [tag.id, tag]));
-  for (const node of pageResult.itemList) {
+  bookmarkRowFactory = node => {
+    const signature = JSON.stringify([node.title, node.url, node.parentId,
+      (data.bookmarks[node.id] ?? []).map(id => [id, tagMap.get(id)?.name])]);
+    const previousRow = bookmarkRowMap.get(node.id);
+    if (previousRow && bookmarkRowSignatureMap.get(node.id) === signature) {
+      previousRow.draggable = canDragBookmarkNode(bookmarkNodeMap, node.id, selectionMode, selectedBookmarkSet);
+      return previousRow;
+    }
     const row = element('div', 'bookmark-row');
+    row.dataset.nodeId = node.id;
     bindBookmarkDrag(row, node, !!folderId && !filtering);
-    if (selectionMode) row.append(selectionCheckbox(node));
     if (!node.url) {
-      const open = button('', 'folder-button', () => {
+      const open = button('', 'folder-button', event => {
+        if (event.ctrlKey || event.metaKey) {
+          event.preventDefault();
+          toggleBookmarkSelection(node);
+          return;
+        }
         folderId = node.id;
-        currentPage = 1;
         if (node.parentId) expandedSet.add(node.parentId);
         renderFolders(); renderBookmarks();
       });
@@ -424,20 +571,28 @@ function renderBookmarks() {
       row.classList.add('bookmark-item');
       row.dataset.bookmarkId = node.id;
       row.tabIndex = 0;
-      if (node.id === selectedBookmarkId) {
+      if (selectionMode ? selectedBookmarkSet.has(node.id) : node.id === selectedBookmarkId) {
         row.classList.add('is-selected');
         row.setAttribute('aria-current', 'true');
       }
+      row.addEventListener('mousedown', event => {
+        if (event.button === 0 && (event.ctrlKey || event.metaKey || event.shiftKey)
+          && !event.target.closest('button, input')) event.preventDefault();
+      });
       row.addEventListener('click', event => {
         if (event.target.closest('button, input')) return;
-        if (selectionMode) row.querySelector('.selection-checkbox').click();
+        if (event.ctrlKey || event.metaKey || event.shiftKey) {
+          event.preventDefault();
+          selectBookmarkWithModifiers(node.id, event);
+        } else if (selectionMode) toggleBookmarkSelection(node);
         else {
           selectBookmark(node.id);
+          bookmarkSelectionAnchorId = node.id;
           row.focus({ preventScroll: true });
         }
       });
       row.addEventListener('dblclick', event => {
-        if (selectionMode || event.target.closest('button, input')) return;
+        if (selectionMode || event.ctrlKey || event.metaKey || event.shiftKey || event.target.closest('button, input')) return;
         event.preventDefault();
         chrome.tabs.create({ url: node.url }).catch(showError);
       });
@@ -478,16 +633,88 @@ function renderBookmarks() {
       const editButton = button('⋮', 'icon-button', () => openEdit(node));
       editButton.title = '编辑名称和网址';
       editButton.setAttribute('aria-label', `编辑“${node.title || node.url}”`);
-      const deleteButton = button('', 'icon-button delete-bookmark', () => deleteBookmark(node.id));
-      deleteButton.title = '删除书签';
-      deleteButton.setAttribute('aria-label', `删除“${node.title || node.url}”`);
-      deleteButton.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7m4-7v7"/></svg>';
-      row.append(badges, tagButton, editButton, deleteButton);
+      row.append(badges, tagButton, editButton);
     }
-    fragment.append(row);
-  }
-  container.append(fragment);
+    previousRow?.replaceWith(row);
+    bookmarkRowMap.set(node.id, row);
+    bookmarkRowSignatureMap.set(node.id, signature);
+    return row;
+  };
+  if (retainedList.length) reconcileBookmarkChunks(retainedList);
+  const anchorRow = scrollAnchor && bookmarkRowMap.get(scrollAnchor.id);
+  if (anchorRow) document.querySelector('main').scrollTop += anchorRow.getBoundingClientRect().top - scrollAnchor.top;
+  fillBookmarkViewport();
 }
+
+function getBookmarkScrollAnchor(container, visibleIdSet) {
+  const bounds = document.querySelector('main').getBoundingClientRect();
+  const top = Math.max(bounds.top, document.querySelector('.list-heading').getBoundingClientRect().bottom);
+  for (const chunk of container.children) {
+    const chunkBounds = chunk.getBoundingClientRect();
+    if (chunkBounds.bottom <= top || chunkBounds.top >= bounds.bottom) continue;
+    for (const row of chunk.children) {
+      if (!visibleIdSet.has(row.dataset.nodeId)) continue;
+      const rowBounds = row.getBoundingClientRect();
+      if (rowBounds.bottom > top && rowBounds.top < bounds.bottom) return { id: row.dataset.nodeId, top: rowBounds.top };
+    }
+  }
+  return null;
+}
+
+function reconcileBookmarkChunks(nodeList) {
+  const container = $('bookmarks');
+  const retainedIdSet = new Set(nodeList.map(node => node.id));
+  for (const [id, row] of bookmarkRowMap) {
+    if (retainedIdSet.has(id)) continue;
+    row.remove();
+    bookmarkRowMap.delete(id);
+    bookmarkRowSignatureMap.delete(id);
+  }
+  const chunkSize = bookmarkRenderQueue.chunkSize;
+  const chunkCount = Math.ceil(nodeList.length / chunkSize);
+  for (let index = 0; index < chunkCount; index++) {
+    let chunk = container.children[index];
+    if (!chunk) {
+      chunk = element('div', 'bookmark-chunk');
+      container.append(chunk);
+    }
+    const chunkList = nodeList.slice(index * chunkSize, (index + 1) * chunkSize);
+    chunk.style.containIntrinsicSize = `auto ${chunkList.length * bookmarkRowHeight}px`;
+    for (let offset = 0; offset < chunkList.length; offset++) {
+      const row = bookmarkRowFactory(chunkList[offset]);
+      const currentRow = chunk.children[offset];
+      if (currentRow !== row) chunk.insertBefore(row, currentRow ?? null);
+    }
+    while (chunk.children.length > chunkList.length) chunk.lastElementChild.remove();
+  }
+  while (container.children.length > chunkCount) container.lastElementChild.remove();
+}
+
+function scheduleBookmarkRender() {
+  cancelAnimationFrame(bookmarkRenderFrame);
+  bookmarkRenderFrame = requestAnimationFrame(fillBookmarkViewport);
+}
+
+function fillBookmarkViewport() {
+  if (!bookmarkRenderQueue || !visibleNodeList.length) return;
+  const container = $('bookmarks');
+  const main = document.querySelector('main');
+  const viewportEnd = main.getBoundingClientRect().bottom - container.getBoundingClientRect().top;
+  const chunkList = bookmarkRenderQueue.next(viewportEnd, bookmarkRowHeight);
+  if (!chunkList.length) return;
+  const chunk = element('div', 'bookmark-chunk');
+  chunk.style.containIntrinsicSize = `auto ${chunkList.length * bookmarkRowHeight}px`;
+  for (const node of chunkList) chunk.append(bookmarkRowFactory(node));
+  container.append(chunk);
+  const firstRow = container.querySelector('.bookmark-row');
+  bookmarkRowHeight = Math.max(60, firstRow.getBoundingClientRect().height);
+  container.style.minHeight = bookmarkRenderQueue.renderedCount < visibleNodeList.length
+    ? `${visibleNodeList.length * bookmarkRowHeight}px` : '';
+  scheduleBookmarkRender();
+}
+
+document.querySelector('main').addEventListener('scroll', scheduleBookmarkRender, { passive: true });
+new ResizeObserver(scheduleBookmarkRender).observe(document.querySelector('main'));
 
 function openTags(node) {
   bulkEditing = false;
@@ -505,49 +732,110 @@ function openTags(node) {
   if (!node) $('new-tag').focus();
 }
 
-function selectionCheckbox(node) {
-  const bookmarkList = node.url ? [node] : getSelectedBookmarkList([node], new Set([node.id]));
-  const count = bookmarkList.filter(bookmark => selectedBookmarkSet.has(bookmark.id)).length;
-  const checkbox = element('input', 'selection-checkbox');
-  checkbox.type = 'checkbox';
-  checkbox.checked = bookmarkList.length > 0 && count === bookmarkList.length;
-  checkbox.indeterminate = count > 0 && count < bookmarkList.length;
-  checkbox.disabled = !bookmarkList.length;
-  checkbox.setAttribute('aria-label', `选择${node.url ? '书签' : '文件夹及其全部书签'}：${node.title || node.url}`);
-  checkbox.addEventListener('change', () => {
-    for (const bookmark of bookmarkList) {
-      if (checkbox.checked) selectedBookmarkSet.add(bookmark.id);
-      else selectedBookmarkSet.delete(bookmark.id);
-    }
-    renderBookmarks(); renderFolders();
-  });
-  return checkbox;
+function getSelectableBookmarkList(node) {
+  node = bookmarkNodeMap.get(node.id) ?? node;
+  let bookmarkList = node.url ? [node] : folderBookmarkListMap.get(node.id);
+  if (!bookmarkList) {
+    bookmarkList = getSelectedBookmarkList([node], new Set([node.id]));
+    folderBookmarkListMap.set(node.id, bookmarkList);
+  }
+  return bookmarkList;
+}
+
+function toggleBookmarkSelection(node) {
+  const bookmarkList = getSelectableBookmarkList(node);
+  if (!bookmarkList.length) return;
+  if (!selectionMode && selectedBookmarkId) selectedBookmarkSet.add(selectedBookmarkId);
+  const deselect = bookmarkList.every(bookmark => selectedBookmarkSet.has(bookmark.id));
+  for (const bookmark of bookmarkList) {
+    if (deselect) selectedBookmarkSet.delete(bookmark.id);
+    else selectedBookmarkSet.add(bookmark.id);
+  }
+  if (node.url) bookmarkSelectionAnchorId = node.id;
+  enterSelection();
+  updateBookmarkSelection();
+  if (!selectionMode) bookmarkRowMap.get(selectedBookmarkId)?.focus({ preventScroll: true });
+}
+
+function updateFolderSelection() {
+  for (const line of $('folders').querySelectorAll('[data-folder-id]')) {
+    const node = bookmarkNodeMap.get(line.dataset.folderId);
+    const bookmarkList = selectionMode && node ? getSelectableBookmarkList(node) : [];
+    line.classList.toggle('is-selected', bookmarkList.length > 0 && bookmarkList.every(bookmark => selectedBookmarkSet.has(bookmark.id)));
+  }
+}
+
+function updateBookmarkSelection() {
+  const remainingId = selectionMode ? getRemainingSingleBookmarkId(selectedBookmarkSet, previousSelectionCount) : null;
+  if (remainingId) {
+    selectedBookmarkId = remainingId;
+    exitSelection();
+    return;
+  }
+  previousSelectionCount = selectedBookmarkSet.size;
+  updateSelectionToolbar();
+  updateFolderSelection();
+  for (const [id, row] of bookmarkRowMap) {
+    const selected = selectionMode ? selectedBookmarkSet.has(id) : selectedBookmarkId === id;
+    row.classList.toggle('is-selected', selected);
+    if (selected) row.setAttribute('aria-current', 'true');
+    else row.removeAttribute('aria-current');
+    row.draggable = canDragBookmarkNode(bookmarkNodeMap, id, selectionMode, selectedBookmarkSet);
+  }
 }
 
 function updateSelectionToolbar() {
   $('selection-toolbar').hidden = !selectionMode;
-  $('selection-count').textContent = `已选${selectedBookmarkSet.size}条书签（跨页、跨文件夹保留）`;
+  $('selection-count').textContent = `已选${selectedBookmarkSet.size}条书签（跨文件夹保留）`;
   $('label-selection').disabled = !selectedBookmarkSet.size;
   $('clear-selection').disabled = !selectedBookmarkSet.size;
+}
+
+function enterSelection() {
+  if (selectionMode) return;
+  selectionMode = true;
+  previousSelectionCount = selectedBookmarkSet.size;
+  $('bulk-tags').hidden = true;
+  for (const row of $('bookmarks').querySelectorAll('.bookmark-row')) {
+    row.draggable = canDragBookmarkNode(bookmarkNodeMap, row.dataset.nodeId, selectionMode, selectedBookmarkSet);
+  }
+  renderFolders();
+  updateBookmarkSelection();
+}
+
+function selectBookmarkWithModifiers(id, event) {
+  const initialIdSet = selectionMode ? selectedBookmarkSet : new Set(selectedBookmarkId ? [selectedBookmarkId] : []);
+  const result = getBookmarkClickSelection(visibleNodeList, initialIdSet, bookmarkSelectionAnchorId, id,
+    { toggle: event.ctrlKey || event.metaKey, range: event.shiftKey });
+  selectedBookmarkSet.clear();
+  for (const selectedId of result.selectedIdSet) selectedBookmarkSet.add(selectedId);
+  bookmarkSelectionAnchorId = result.anchorId;
+  enterSelection();
+  updateBookmarkSelection();
+  bookmarkRowMap.get(selectionMode ? id : selectedBookmarkId)?.focus({ preventScroll: true });
 }
 
 function exitSelection() {
   selectionMode = false;
   selectedBookmarkSet.clear();
-  renderBookmarks(); renderFolders();
+  previousSelectionCount = 0;
+  bookmarkSelectionAnchorId = selectedBookmarkId;
+  $('bulk-tags').hidden = false;
+  for (const row of $('bookmarks').querySelectorAll('.bookmark-row')) {
+    row.draggable = canDragBookmarkNode(bookmarkNodeMap, row.dataset.nodeId, selectionMode, selectedBookmarkSet);
+  }
+  renderFolders();
+  updateBookmarkSelection();
 }
-$('bulk-tags').addEventListener('click', () => {
-  selectionMode = true;
-  renderBookmarks(); renderFolders();
-});
+$('bulk-tags').addEventListener('click', enterSelection);
 $('exit-selection').addEventListener('click', exitSelection);
 $('clear-selection').addEventListener('click', () => {
-  selectedBookmarkSet.clear(); renderBookmarks(); renderFolders();
+  selectedBookmarkSet.clear(); bookmarkSelectionAnchorId = null; updateBookmarkSelection();
 });
-$('select-page').addEventListener('click', () => {
-  const bookmarkList = getSelectedBookmarkList(pageNodeList, new Set(pageNodeList.map(node => node.id)));
+$('select-visible').addEventListener('click', () => {
+  const bookmarkList = getSelectedBookmarkList(visibleNodeList, new Set(visibleNodeList.map(node => node.id)));
   for (const bookmark of bookmarkList) selectedBookmarkSet.add(bookmark.id);
-  renderBookmarks(); renderFolders();
+  updateBookmarkSelection();
 });
 $('label-selection').addEventListener('click', () => {
   if (!selectedBookmarkSet.size) return;
@@ -627,8 +915,11 @@ async function refresh() {
     if (version !== refreshVersion) return;
     treeList = nextTreeList;
     flatList = flattenTree(treeList);
+    bookmarkNodeMap = new Map(flatList.map(node => [node.id, node]));
+    folderBookmarkListMap.clear();
     const validBookmarkSet = new Set(flatList.filter(node => node.url).map(node => node.id));
     for (const id of selectedBookmarkSet) if (!validBookmarkSet.has(id)) selectedBookmarkSet.delete(id);
+    updateBookmarkSelection();
     if (dataVersion === initialDataVersion) {
       data = storage.tagData ?? emptyData();
       tagDataJSON = JSON.stringify(data);
@@ -642,7 +933,7 @@ async function refresh() {
 
 $('search').addEventListener('input', () => {
   clearTimeout(searchTimer);
-  searchTimer = setTimeout(() => { currentPage = 1; renderBookmarks(); }, 150);
+  searchTimer = setTimeout(() => { renderBookmarks(); }, 150);
 });
 $('manage-tags').addEventListener('click', () => openTags(null));
 chrome.runtime.onMessage.addListener((message, sender) => {
@@ -700,24 +991,8 @@ $('retry-pending').addEventListener('click', async () => {
 for (const [id, direction] of [['pending-previous', -1], ['pending-next', 1]]) {
   $(id).addEventListener('click', () => { pendingPage += direction; renderPending(); $('pending-records').scrollTop = 0; });
 }
-$('clear-tags').addEventListener('click', () => { selectedTagSet.clear(); currentPage = 1; renderFilters(); renderBookmarks(); });
-for (const [id, direction] of [['previous-page', -1], ['next-page', 1]]) {
-  $(id).addEventListener('click', () => {
-    currentPage += direction;
-    renderBookmarks();
-    document.querySelector('main').scrollTop = 0;
-  });
-}
+$('clear-tags').addEventListener('click', () => { selectedTagSet.clear(); renderFilters(); renderBookmarks(); });
 document.querySelectorAll('.close-dialog').forEach(node => node.addEventListener('click', () => node.closest('dialog').close()));
-document.querySelectorAll('dialog').forEach(dialog => {
-  dialog.addEventListener('click', event => {
-    if (event.target !== dialog) return;
-    const bounds = dialog.getBoundingClientRect();
-    if (event.clientX < bounds.left || event.clientX > bounds.right
-      || event.clientY < bounds.top || event.clientY > bounds.bottom) dialog.close();
-  });
-});
-
 document.addEventListener('keydown', event => {
   if (event.key === 'Delete' && !event.repeat && !event.ctrlKey && !event.metaKey && !event.altKey
     && !selectionMode && selectedBookmarkId && !document.querySelector('dialog[open]')
@@ -855,7 +1130,7 @@ $('edit-form').addEventListener('submit', async event => {
 for (const event of [chrome.bookmarks.onCreated, chrome.bookmarks.onRemoved, chrome.bookmarks.onChanged, chrome.bookmarks.onMoved, chrome.bookmarks.onChildrenReordered, chrome.bookmarks.onImportEnded]) {
   event.addListener(() => {
     clearTimeout(refreshTimer);
-    refreshTimer = setTimeout(refresh, 60);
+    if (!bookmarkMutationRunning) refreshTimer = setTimeout(refresh, 60);
   });
 }
 chrome.storage.onChanged.addListener((changes, area) => {

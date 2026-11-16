@@ -1,5 +1,6 @@
 const statusNode = document.getElementById('tag-sync-status');
 const textNode = document.getElementById('tag-sync-text');
+const timeNode = document.getElementById('tag-sync-time');
 const detailNode = document.getElementById('tag-sync-detail');
 const retryButton = document.getElementById('retry-tag-sync');
 
@@ -12,13 +13,13 @@ function render(status = { state: 'syncing' }) {
   statusNode.dataset.state = status.state;
   textNode.textContent = labelMap[status.state] ?? '正在检查标签同步…';
   const time = status.time ? new Date(status.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
+  timeNode.textContent = ['submitted', 'received', 'unchanged'].includes(status.state) ? time : '';
+  timeNode.hidden = !timeNode.textContent;
   if (status.state === 'error') detailNode.textContent = `${status.message}。本地标签已保留，将自动重试。`;
-  else if (status.state === 'submitted') detailNode.textContent = `${time} · Chrome已接收，其他设备送达时间由Chrome决定。`;
-  else if (status.state === 'received') detailNode.textContent = `${time}${status.pendingCount ? ` · ${status.pendingCount}项关联待匹配` : ' · 本地标签已更新'}`;
-  else if (status.state === 'unchanged') detailNode.textContent = '本机与同步存储中的标签版本一致，其他设备是否收到需在对应设备确认。';
-  else if (status.state === 'receiving') detailNode.textContent = '数据尚未完整送达，暂时保留本地标签。';
-  else if (['ready', 'waiting'].includes(status.state)) detailNode.textContent = '本机没有可提交的标签，请在保存完整标签的电脑重新加载扩展并重试同步。';
-  else detailNode.textContent = '需在两台电脑启用Chrome扩展同步；离线时由Chrome稍后传送。';
+  else if (status.state === 'received') detailNode.textContent = status.pendingCount ? `${status.pendingCount}项关联待匹配` : '';
+  else if (['ready', 'waiting'].includes(status.state)) detailNode.textContent = '请在保存完整标签的电脑重试同步。';
+  else detailNode.textContent = '';
+  detailNode.hidden = !detailNode.textContent;
   retryButton.hidden = !['error', 'ready', 'waiting', 'receiving'].includes(status.state);
 }
 

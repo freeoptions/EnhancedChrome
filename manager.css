@@ -21,10 +21,13 @@ kbd { color:var(--muted); font-family:inherit; font-size:var(--text-small); whit
 .resizing-sidebar,.resizing-sidebar * { cursor:col-resize !important; user-select:none; }
 aside { display:flex; flex-direction:column; overflow:auto; padding:16px 12px 12px 0; background:var(--surface); }
 aside nav { flex:1; }
+.folder-actions { display:flex; flex-wrap:wrap; gap:2px; padding:0 4px 8px 12px; flex-shrink:0; }
+.folder-actions .text-button { font-size:var(--text-small); padding:6px 4px; }
 .folder-line { position:relative; display:flex; align-items:center; min-height:40px; border-radius:0 8px 8px 0; color:var(--ink); }
 .folder-guide { position:absolute; top:0; bottom:0; width:1px; background:#e4e4e7; pointer-events:none; }
 .folder-line.active { background:var(--tint); color:var(--primary); }
 .folder-line:hover:not(.active) { background:var(--bg); }
+.folder-line.is-selected,.folder-line.is-selected:hover { background:var(--tint); box-shadow:inset 3px 0 var(--primary); }
 .folder-toggle { display:grid; place-items:center; width:24px; height:32px; padding:0; flex-shrink:0; color:inherit; border-radius:5px; }
 .folder-toggle[aria-expanded]::before { content:""; width:0; height:0; border-top:4px solid transparent; border-bottom:4px solid transparent; border-left:5px solid currentColor; }
 .folder-toggle[aria-expanded="true"]::before { transform:rotate(90deg); }
@@ -50,12 +53,10 @@ h2 { font-size:calc(var(--text-base) + 1px); font-weight:500; margin:0; }
 #selection-toolbar { display:flex; align-items:center; gap:12px; margin-left:auto; }
 #bulk-tags { margin-left:auto; }
 #selection-count { color:var(--primary); font-size:var(--text-base); }
-.selection-checkbox { flex-shrink:0; margin:0 4px 0 0; }
 .bookmark-list { border-radius:var(--radius); background:var(--surface); box-shadow:var(--shadow); overflow:hidden; }
-.pagination { display:flex; align-items:center; justify-content:flex-end; gap:12px; padding:16px 0; }
-.pagination .text-button:disabled { color:var(--muted); cursor:default; background:none; opacity:.5; }
 .bookmark-row { min-height:60px; display:flex; gap:16px; align-items:center; padding:10px 20px; border-bottom:1px solid #f1f3f4; }
-.bookmark-row:last-child { border-bottom:0; }
+.bookmark-chunk { content-visibility:auto; }
+.bookmark-chunk:last-child .bookmark-row:last-child { border-bottom:0; }
 .bookmark-row,.folder-line { position:relative; }
 [draggable="true"] { cursor:grab; }
 .is-dragging { opacity:.45; }
@@ -67,9 +68,6 @@ h2 { font-size:calc(var(--text-base) + 1px); font-weight:500; margin:0; }
 .bookmark-row:hover { background:#f8faff; }
 .bookmark-item { cursor:pointer; }
 .bookmark-item.is-selected,.bookmark-item.is-selected:hover { background:var(--tint); box-shadow:inset 3px 0 var(--primary); }
-.delete-bookmark { color:var(--muted); }
-.delete-bookmark:hover { color:var(--danger); background:#fce8e6; }
-.delete-bookmark svg { width:17px; height:17px; fill:none; stroke:currentColor; stroke-width:1.6; stroke-linecap:round; stroke-linejoin:round; vertical-align:middle; }
 .site-icon { position:relative; width:22px; height:22px; display:grid; place-items:center; border-radius:5px; background:#eef0f6; color:var(--muted); font-size:var(--text-small); flex-shrink:0; }
 .bookmark-info { flex:1; min-width:0; }
 .bookmark-link { font-size:var(--text-base); color:var(--ink); text-decoration:none; display:block; width:fit-content; max-width:100%; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; line-height:22px; }
@@ -139,6 +137,8 @@ body:has(#bookmark-undo:not([hidden])) #toast { bottom:90px; }
 #folders { min-height: 0; overflow: auto; }
 .tag-sync-panel { flex-shrink: 0; margin-top: 12px; padding: 16px 18px 8px; border-top: 1px solid var(--line); }
 #tag-sync-status { display: flex; align-items: center; gap: 8px; color: #526782; font-size: var(--text-base); }
+#tag-sync-text { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+#tag-sync-time { flex-shrink: 0; white-space: nowrap; color: #7b8492; font-size: var(--text-small); }
 .tag-sync-indicator { flex: 0 0 auto; width: 9px; height: 9px; border-radius: 50%; background: #8da0b5; }
 #tag-sync-status[data-state="syncing"] .tag-sync-indicator,
 #tag-sync-status[data-state="receiving"] .tag-sync-indicator { width: 12px; height: 12px; background: transparent; border: 2px solid #d7e4fa; border-top-color: #326bd1; animation: tag-sync-spin 800ms linear infinite; }

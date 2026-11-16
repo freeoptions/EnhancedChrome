@@ -12,7 +12,7 @@ test('侧栏拖动限制宽度，窄窗口保留内容区域，非法存储值�
   assert.equal(clampSidebarWidth(350, 1440), 350);
 });
 
-test('一万条书签每次只提供100条给页面，翻页无遗漏或重复', () => {
+test('一万条待处理关联每次只提供100条，翻页无遗漏或重复', () => {
   const nodeList = Array.from({ length: 10000 }, (_, index) => ({ id: String(index) }));
   const visitedList = [];
   for (let page = 1; page <= 100; page++) {

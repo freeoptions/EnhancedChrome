@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { getBookmarkMoveDestination } from '../bookmark-move.js';
+import { getBookmarkDragScrollDelta, getBookmarkMoveDestination } from '../bookmark-move.js';
 
 const nodeList = [
   { id: '0' },
@@ -14,7 +14,8 @@ const nodeList = [
   { id: 'managed', parentId: 'bar', index: 4, unmodifiable: 'managed' },
   { id: 'managed-child', parentId: 'managed', index: 0, url: 'https://managed.example' },
 ];
-const move = (source, target, position) => getBookmarkMoveDestination(nodeList, source, target, position);
+const nodeMap = new Map(nodeList.map(node => [node.id, node]));
+const move = (source, target, position) => getBookmarkMoveDestination(nodeMap, source, target, position);
 
 test('同目录排序使用Chrome移动前索引，覆盖向前、向后及文件夹排序', () => {
   assert.deepEqual(move('last', 'a', 'before'), { parentId: 'bar', index: 0 });
@@ -55,7 +56,59 @@ test('来源或目标被删除、非法位置时取消移动', () => {
   assert.equal(move('a', 'folder', null), null);
 });
 
-test('分页条目使用真实目录索引，而非页内索引', () => {
-  const pageNodeList = [...nodeList, { id: 'page-two', parentId: 'bar', index: 100, url: 'https://page.example' }];
-  assert.deepEqual(getBookmarkMoveDestination(pageNodeList, 'a', 'page-two', 'after'), { parentId: 'bar', index: 101 });
+test('后续加载的条目使用真实目录索引，跨渲染批次排序不偏移', () => {
+  const laterNodeList = [...nodeList, { id: 'later-item', parentId: 'bar', index: 100, url: 'https://page.example' }];
+  assert.deepEqual(getBookmarkMoveDestination(new Map(laterNodeList.map(node => [node.id, node])), 'a', 'later-item', 'after'), { parentId: 'bar', index: 101 });
+});
+
+test('左侧只显示文件夹时，同级排序仍使用包含书签的真实索引', () => {
+  const folderNodeMap = new Map([...nodeMap,
+    ['folder-first', { id: 'folder-first', parentId: 'bar', index: 5 }],
+    ['hidden-bookmark', { id: 'hidden-bookmark', parentId: 'bar', index: 6, url: 'https://hidden.example' }],
+    ['folder-last', { id: 'folder-last', parentId: 'bar', index: 7 }],
+  ]);
+  assert.deepEqual(getBookmarkMoveDestination(folderNodeMap, 'folder-first', 'folder-last', 'after'), { parentId: 'bar', index: 8 });
+  assert.deepEqual(getBookmarkMoveDestination(folderNodeMap, 'folder-last', 'folder-first', 'before'), { parentId: 'bar', index: 5 });
+});
+
+test('左侧文件夹可跨目录移入，同级排序不把文件夹移入自身后代', () => {
+  const folderNodeMap = new Map([...nodeMap,
+    ['destination', { id: 'destination', parentId: 'other', index: 0 }],
+    ['destination-child', { id: 'destination-child', parentId: 'destination', index: 0 }],
+  ]);
+  assert.deepEqual(getBookmarkMoveDestination(folderNodeMap, 'folder', 'destination', 'inside'), { parentId: 'destination' });
+  assert.deepEqual(getBookmarkMoveDestination(folderNodeMap, 'nested', 'other', 'inside'), { parentId: 'other' });
+  assert.equal(getBookmarkMoveDestination(folderNodeMap, 'destination', 'destination-child', 'inside'), null);
+  assert.equal(getBookmarkMoveDestination(folderNodeMap, 'folder', 'nested', 'before'), null);
+  assert.equal(getBookmarkMoveDestination(folderNodeMap, 'folder', 'bar', 'before'), null);
+});
+
+test('拖动接近上沿向上滚动，接近下沿向下滚动，中间不滚动', () => {
+  assert.ok(getBookmarkDragScrollDelta(110, 100, 700, 16) < 0);
+  assert.ok(getBookmarkDragScrollDelta(690, 100, 700, 16) > 0);
+  assert.equal(getBookmarkDragScrollDelta(400, 100, 700, 16), 0);
+  assert.equal(getBookmarkDragScrollDelta(164, 100, 700, 16), 0);
+  assert.equal(getBookmarkDragScrollDelta(636, 100, 700, 16), 0);
+});
+
+test('越靠近边缘越快，指针保持不动时每帧仍产生滚动距离', () => {
+  const nearEdge = getBookmarkDragScrollDelta(105, 100, 700, 16);
+  const farther = getBookmarkDragScrollDelta(140, 100, 700, 16);
+  assert.ok(Math.abs(nearEdge) > Math.abs(farther));
+  assert.equal(getBookmarkDragScrollDelta(105, 100, 700, 16), nearEdge);
+  assert.equal(getBookmarkDragScrollDelta(105, 100, 700, 32), nearEdge * 2);
+});
+
+test('拖到侧栏固定按钮或底部状态区仍可滚动，单帧位移有上限', () => {
+  assert.equal(getBookmarkDragScrollDelta(50, 100, 700, 16), -14.4);
+  assert.equal(getBookmarkDragScrollDelta(750, 100, 700, 16), 14.4);
+  assert.equal(getBookmarkDragScrollDelta(50, 100, 700, 1000), -28.8);
+  assert.equal(getBookmarkDragScrollDelta(50, 100, 700, -1), 0);
+});
+
+test('很矮的滚动区域上下边缘不重叠，空区域不滚动', () => {
+  assert.ok(getBookmarkDragScrollDelta(101, 100, 130, 16) < 0);
+  assert.ok(getBookmarkDragScrollDelta(129, 100, 130, 16) > 0);
+  assert.equal(getBookmarkDragScrollDelta(115, 100, 130, 16), 0);
+  assert.equal(getBookmarkDragScrollDelta(100, 100, 100, 16), 0);
 });
