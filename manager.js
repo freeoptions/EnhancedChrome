@@ -1,6 +1,7 @@
 import { clampSidebarWidth, emptyData, filterBookmarks, flattenTree, getBookmarkPage, getSelectedBookmarkList } from './core.js';
 import { bookmarkCandidates, exportFilename, validateBackup } from './backup.js';
 import './tag-sync-ui.js';
+import { getBookmarkMoveDestination } from './bookmark-move.js';
 
 const $ = id => document.getElementById(id);
 let treeList = [];
@@ -33,6 +34,7 @@ let pendingPage = 1;
 let sidebarWidth = 280;
 let dragPointerId = null;
 let dragOffset = 0;
+let draggedNodeId = null;
 
 function element(tag, className, text) {
   const node = document.createElement(tag);
@@ -191,6 +193,67 @@ function renderPending() {
   }
 }
 
+function clearBookmarkDrop() {
+  for (const target of document.querySelectorAll('[data-drop-position]')) delete target.dataset.dropPosition;
+}
+
+function bindBookmarkDrag(row, node, allowSort = false) {
+  row.draggable = !selectionMode && !node.unmodifiable && !!node.parentId
+    && !!flatList.find(parent => parent.id === node.parentId)?.parentId && !node.folderType;
+  row.addEventListener('dragstart', event => {
+    if (!row.draggable || bookmarkMutationRunning || event.target.closest('input, .text-button, .icon-button, .folder-toggle')) {
+      event.preventDefault();
+      return;
+    }
+    draggedNodeId = node.id;
+    event.dataTransfer.effectAllowed = 'move';
+    event.dataTransfer.setData('application/x-enhanced-chrome-bookmark', node.id);
+    row.classList.add('is-dragging');
+  });
+  row.addEventListener('dragend', () => {
+    draggedNodeId = null;
+    row.classList.remove('is-dragging');
+    clearBookmarkDrop();
+  });
+  function dropPosition(event) {
+    const bounds = row.getBoundingClientRect();
+    const ratio = (event.clientY - bounds.top) / bounds.height;
+    if (!node.url && (!allowSort || (ratio >= .25 && ratio <= .75))) return 'inside';
+    return allowSort ? (ratio < .5 ? 'before' : 'after') : null;
+  }
+  row.addEventListener('dragover', event => {
+    clearBookmarkDrop();
+    if (!draggedNodeId || selectionMode || bookmarkMutationRunning) return;
+    const position = dropPosition(event);
+    if (!getBookmarkMoveDestination(flatList, draggedNodeId, node.id, position)) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'move';
+    row.dataset.dropPosition = position;
+  });
+  row.addEventListener('dragleave', event => {
+    if (!row.contains(event.relatedTarget)) delete row.dataset.dropPosition;
+  });
+  row.addEventListener('drop', async event => {
+    const sourceId = draggedNodeId;
+    const position = dropPosition(event);
+    clearBookmarkDrop();
+    if (!sourceId || selectionMode || bookmarkMutationRunning
+      || !getBookmarkMoveDestination(flatList, sourceId, node.id, position)) return;
+    event.preventDefault();
+    draggedNodeId = null;
+    bookmarkMutationRunning = true;
+    try {
+      const nextNodeList = flattenTree(await chrome.bookmarks.getTree());
+      const destination = getBookmarkMoveDestination(nextNodeList, sourceId, node.id, position);
+      if (!destination) throw new Error('书签位置已变化，请重新拖动');
+      await chrome.bookmarks.move(sourceId, destination);
+      await refresh();
+      notify(position === 'inside' ? '已移入文件夹' : '顺序已更新');
+    } catch (error) { showError(error); }
+    finally { bookmarkMutationRunning = false; }
+  });
+}
+
 function renderFolders() {
   const nav = $('folders');
   nav.replaceChildren();
@@ -226,6 +289,7 @@ function renderFolders() {
     line.append(toggle);
     if (selectionMode && node.id) line.append(selectionCheckbox(node));
     line.append(select);
+    if (node.id) bindBookmarkDrag(line, node);
     nav.append(line);
     if (expandedSet.has(node.id)) childFolderList.forEach(child => addFolder(child, depth + 1));
   }
@@ -345,6 +409,7 @@ function renderBookmarks() {
   const tagMap = new Map(data.tags.map(tag => [tag.id, tag]));
   for (const node of pageResult.itemList) {
     const row = element('div', 'bookmark-row');
+    bindBookmarkDrag(row, node, !!folderId && !filtering);
     if (selectionMode) row.append(selectionCheckbox(node));
     if (!node.url) {
       const open = button('', 'folder-button', () => {
@@ -379,7 +444,21 @@ function renderBookmarks() {
       row.addEventListener('focus', () => { if (!selectionMode) selectBookmark(node.id); });
       let hostname = '';
       try { hostname = new URL(node.url).hostname; } catch { /* Chrome允许部分特殊书签地址。 */ }
-      row.append(element('span', 'site-icon', hostname ? hostname.replace(/^www\./, '')[0].toUpperCase() : '↗'));
+      const siteIcon = element('span', 'site-icon', hostname ? hostname.replace(/^www\./, '')[0].toUpperCase() : '↗');
+      const favicon = element('img', 'site-favicon');
+      favicon.alt = '';
+      favicon.draggable = false;
+      favicon.loading = 'lazy';
+      const faviconUrl = new URL(chrome.runtime.getURL('/_favicon/'));
+      faviconUrl.searchParams.set('pageUrl', node.url);
+      faviconUrl.searchParams.set('size', '32');
+      favicon.addEventListener('load', () => {
+        siteIcon.replaceChildren(favicon);
+      });
+      favicon.addEventListener('error', () => favicon.remove());
+      favicon.src = faviconUrl.href;
+      siteIcon.append(favicon);
+      row.append(siteIcon);
       const info = element('div', 'bookmark-info');
       const link = element('a', 'bookmark-link', node.title || node.url);
       link.href = '#';
@@ -394,7 +473,7 @@ function renderBookmarks() {
         const tag = tagMap.get(tagId);
         if (tag) badges.append(element('span', 'tag-badge', tag.name));
       }
-      const tagButton = button('标签', 'text-button', () => openTags(node));
+      const tagButton = button('打标签', 'text-button', () => openTags(node));
       tagButton.setAttribute('aria-label', `设置“${node.title || node.url}”的标签`);
       const editButton = button('⋮', 'icon-button', () => openEdit(node));
       editButton.title = '编辑名称和网址';
