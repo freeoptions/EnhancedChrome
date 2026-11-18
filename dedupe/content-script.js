@@ -16,7 +16,7 @@
     if (monitoringEnabled) scheduleReport();
   });
 
-  function showToast(message) {
+  function showToast(message, fontSize) {
     toastElement?.remove();
     toastElement = document.createElement("div");
     toastElement.textContent = message;
@@ -33,7 +33,7 @@
       "background: rgba(24, 32, 51, .94) !important",
       "box-shadow: 0 8px 26px rgba(0,0,0,.2) !important",
       "color: #fff !important",
-      "font: 14px/1.5 'Segoe UI Variable Text', 'Segoe UI', 'Microsoft YaHei UI', 'Microsoft YaHei', sans-serif !important",
+      `font: ${fontSize}px/1.5 'Segoe UI Variable Text', 'Segoe UI', 'Microsoft YaHei UI', 'Microsoft YaHei', sans-serif !important`,
       "opacity: 0 !important",
       "transform: translateY(-6px) !important",
       "transition: opacity .18s ease, transform .18s ease !important"
@@ -62,7 +62,7 @@
   if (typeof extensionRuntime?.onMessage?.addListener === "function") {
     extensionRuntime.onMessage.addListener((message, sender, sendResponse) => {
       if (message?.type === "SHOW_DEDUPE_TOAST" && document.documentElement) {
-        showToast(String(message.message || "已处理重复标签页"));
+        showToast(String(message.message || "已处理重复标签页"), message.fontSize);
         sendResponse({ ok: true });
       }
     });

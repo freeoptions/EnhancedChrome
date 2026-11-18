@@ -31,6 +31,13 @@ test('相邻原位置不重复移动，混合目录结果不允许排序', () =>
   assert.equal(move('a', 'a', 'before'), null);
 });
 
+test('剪切粘贴可插到另一文件夹的书签下方，拖拽排序仍限制在原目录', () => {
+  const nextNodeMap = new Map([...nodeMap, ['destination', { id: 'destination', parentId: 'other', index: 0, url: 'https://destination.example' }]]);
+  assert.equal(getBookmarkMoveDestination(nextNodeMap, 'a', 'destination', 'after'), null);
+  assert.deepEqual(getBookmarkMoveDestination(nextNodeMap, 'a', 'destination', 'after', { allowCrossFolder: true }), { parentId: 'other', index: 1 });
+  assert.equal(getBookmarkMoveDestination(nextNodeMap, 'a', 'managed-child', 'after', { allowCrossFolder: true }), null);
+});
+
 test('跨目录移入追加末尾，可移入空目录与系统书签目录', () => {
   assert.deepEqual(move('a', 'nested', 'inside'), { parentId: 'nested' });
   assert.deepEqual(move('folder', 'other', 'inside'), { parentId: 'other' });

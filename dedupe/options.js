@@ -21,6 +21,20 @@ const importRulesInput = document.querySelector("#import-rules-input");
 let generatedRule = null;
 let editingRuleId = null;
 const submitRuleButton = ruleForm.querySelector("button[type=\"submit\"]");
+let initialRuleForm = readRuleForm();
+let pendingRuleWriteCount = 0;
+
+function readRuleForm() {
+  return JSON.stringify([ruleName.value, ruleScheme.value, ruleHost.value, rulePath.value,
+    ruleParams.value, ruleIncludeHash.checked]);
+}
+
+document.addEventListener("before-backdrop-close", (event) => {
+  if (pendingRuleWriteCount || submitRuleButton.disabled || generatedRule || sampleUrls.value !== ""
+    || readRuleForm() !== initialRuleForm) {
+    event.preventDefault();
+  }
+});
 
 function createId() {
   return globalThis.crypto?.randomUUID?.() || `rule-${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -44,8 +58,13 @@ async function readRules() {
 }
 
 async function writeRules(ruleList) {
-  await chrome.storage.local.set({ rules: ruleList });
-  await renderRules();
+  pendingRuleWriteCount++;
+  try {
+    await chrome.storage.local.set({ rules: ruleList });
+    await renderRules();
+  } finally {
+    pendingRuleWriteCount--;
+  }
 }
 
 function setMessage(message, isError = false) {
@@ -68,6 +87,7 @@ function fillForm(rule) {
   rulePath.value = rule.path || "";
   ruleParams.value = (rule.ignoreQueryParams || []).join("\n");
   ruleIncludeHash.checked = rule.includeHash !== false;
+  initialRuleForm = readRuleForm();
   submitRuleButton.textContent = "更新规则";
 }
 
@@ -159,6 +179,8 @@ function renderRules() {
 
 ruleForm.addEventListener("submit", async (event) => {
   event.preventDefault();
+  if (submitRuleButton.disabled) return;
+  submitRuleButton.disabled = true;
   try {
     const rule = collectFormRule();
     const ruleList = await readRules();
@@ -173,10 +195,13 @@ ruleForm.addEventListener("submit", async (event) => {
     editingRuleId = null;
     ruleForm.reset();
     ruleIncludeHash.checked = true;
+    initialRuleForm = readRuleForm();
     submitRuleButton.textContent = "保存规则";
     setMessage("规则已保存，当前窗口会自动重新扫描。", false);
   } catch (error) {
     setMessage(error.message, true);
+  } finally {
+    submitRuleButton.disabled = false;
   }
 });
 

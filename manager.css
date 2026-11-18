@@ -82,7 +82,7 @@ h2 { font-size:calc(var(--text-base) + 1px); font-weight:500; margin:0; }
 .icon-button:hover { background:var(--line); }
 .empty { padding:64px 24px; text-align:center; color:var(--muted); line-height:1.9; }
 #error { background:#fce8e6; color:var(--danger); padding:16px; margin-bottom:16px; border-radius:var(--radius); }
-dialog { width:460px; max-width:calc(100vw - 32px); border:0; border-radius:12px; padding:24px; box-shadow:0 12px 48px #20212440; }
+dialog { width:460px; max-width:calc(100vw - 32px); border:0; border-radius:12px; padding:24px; font-size:var(--text-base); box-shadow:0 12px 48px #20212440; }
 dialog::backdrop { background:#20212455; }
 .dialog-heading { display:flex; align-items:center; justify-content:space-between; }
 #tag-dialog-description { line-height:1.7; overflow-wrap:anywhere; }
@@ -101,8 +101,8 @@ input[type="checkbox"] { accent-color:var(--primary); width:17px; height:17px; f
 .form-error { color:var(--danger); font-size:var(--text-small); min-height:16px; }
 .field { display:block; margin-top:20px; color:var(--muted); font-size:var(--text-small); }
 .field input { display:block; margin-top:8px; color:var(--ink); font-size:var(--text-base); }
-#toast { position:fixed; bottom:28px; left:50%; transform:translateX(-50%); background:#303134; color:white; border-radius:6px; padding:12px 24px; box-shadow:var(--shadow); }
-#bookmark-undo { --undo-surface:#323232; --undo-ink:#f1f3f4; --undo-action:#a8c7fa; --undo-muted:#bdc1c6; position:fixed; bottom:24px; left:50%; transform:translateX(-50%); z-index:20; display:flex; align-items:center; gap:32px; min-width:min(480px,calc(100vw - 32px)); max-width:min(840px,calc(100vw - 32px)); min-height:56px; padding:12px 20px; background:var(--undo-surface); color:var(--undo-ink); font-size:14px; line-height:1.5; font-weight:500; border-radius:10px; box-shadow:0 3px 10px #20212433; }
+#toast { position:fixed; bottom:28px; left:50%; transform:translateX(-50%); background:#303134; color:white; border-radius:6px; padding:12px 24px; font-size:var(--text-base); box-shadow:var(--shadow); }
+#bookmark-undo { --undo-surface:#323232; --undo-ink:#f1f3f4; --undo-action:#a8c7fa; --undo-muted:#bdc1c6; position:fixed; bottom:24px; left:50%; transform:translateX(-50%); z-index:20; display:flex; align-items:center; gap:32px; min-width:min(480px,calc(100vw - 32px)); max-width:min(840px,calc(100vw - 32px)); min-height:56px; padding:12px 20px; background:var(--undo-surface); color:var(--undo-ink); font-size:var(--text-base); line-height:1.5; font-weight:500; border-radius:10px; box-shadow:0 3px 10px #20212433; }
 #bookmark-undo-text { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .bookmark-undo-actions { display:flex; align-items:center; gap:12px; flex-shrink:0; margin-left:auto; }
 #bookmark-undo-countdown { min-width:3em; text-align:right; color:var(--undo-muted); font-size:inherit; font-variant-numeric:tabular-nums; }

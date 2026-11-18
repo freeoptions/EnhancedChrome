@@ -1,4 +1,4 @@
-export function getBookmarkMoveDestination(nodeMap, sourceId, targetId, position) {
+export function getBookmarkMoveDestination(nodeMap, sourceId, targetId, position, { allowCrossFolder = false } = {}) {
   const source = nodeMap.get(sourceId);
   const target = nodeMap.get(targetId);
   if (!source || !target || source.id === target.id || !['before', 'after', 'inside'].includes(position)) return null;
@@ -15,10 +15,11 @@ export function getBookmarkMoveDestination(nodeMap, sourceId, targetId, position
     }
   }
   if (position === 'inside') return source.parentId === parent.id ? null : { parentId: parent.id };
-  if (source.parentId !== parent.id || !Number.isInteger(target.index)) return null;
+  const sameFolder = source.parentId === parent.id;
+  if ((!sameFolder && !allowCrossFolder) || !Number.isInteger(target.index)) return null;
   // Chrome接收移动前的插入位置，同目录向后移动时由Chrome调整索引。
   const index = target.index + (position === 'after' ? 1 : 0);
-  if (index === source.index || index === source.index + 1) return null;
+  if (sameFolder && (index === source.index || index === source.index + 1)) return null;
   return { parentId: parent.id, index };
 }
 

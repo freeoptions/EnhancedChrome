@@ -19,6 +19,7 @@ let tagFilterMode = 'multiple';
 const expandedSet = new Set();
 let editingBookmarkId = null;
 let selectedBookmarkId = null;
+let cutBookmarkId = null;
 let bookmarkSelectionAnchorId = null;
 let bookmarkMutationRunning = false;
 let bookmarkUndoTimer;
@@ -29,6 +30,7 @@ let bulkEditing = false;
 const selectedBookmarkSet = new Set();
 let bulkBookmarkIdList = [];
 let visibleNodeList = [];
+let initialTagSet = new Set();
 let draftTagSet = new Set();
 let editingNode = null;
 let toastTimer;
@@ -117,6 +119,35 @@ async function deleteBookmark(id) {
     if (selectedBookmarkId === id) selectedBookmarkId = null;
     updateBookmarkUndo(result);
     await refresh();
+  } catch (error) { showError(error); }
+  finally { bookmarkMutationRunning = false; }
+}
+
+async function pasteCutBookmark(targetId) {
+  if (bookmarkMutationRunning) return;
+  bookmarkMutationRunning = true;
+  const sourceId = cutBookmarkId;
+  try {
+    const nodeMap = new Map(flattenTree(await chrome.bookmarks.getTree()).map(node => [node.id, node]));
+    const source = nodeMap.get(sourceId);
+    const target = nodeMap.get(targetId);
+    if (!source?.url) {
+      cutBookmarkId = null;
+      return notify('剪切的书签已不存在');
+    }
+    if (!target?.url || sourceId === targetId) return notify('请选择另一条书签作为粘贴位置');
+    const destination = getBookmarkMoveDestination(nodeMap, sourceId, targetId, 'after', { allowCrossFolder: true });
+    if (!destination) {
+      if (source.parentId !== target.parentId || source.index !== target.index + 1) {
+        return notify('无法粘贴到这条书签下方');
+      }
+      cutBookmarkId = null;
+      return notify('剪切的书签已在目标下方');
+    }
+    await chrome.bookmarks.move(sourceId, destination);
+    cutBookmarkId = null;
+    await refresh();
+    notify('书签已粘贴到目标下方');
   } catch (error) { showError(error); }
   finally { bookmarkMutationRunning = false; }
 }
@@ -719,7 +750,8 @@ new ResizeObserver(scheduleBookmarkRender).observe(document.querySelector('main'
 function openTags(node) {
   bulkEditing = false;
   editingBookmarkId = node?.id ?? null;
-  draftTagSet = new Set(data.bookmarks[editingBookmarkId] ?? []);
+  initialTagSet = new Set(data.bookmarks[editingBookmarkId] ?? []);
+  draftTagSet = new Set(initialTagSet);
   $('tag-dialog-title').textContent = node ? '设置书签标签' : '管理标签';
   $('tag-dialog-description').textContent = node ? node.title || node.url : '删除标签会移除所有书签上的该标签，书签会保留。';
   $('save-tags').hidden = !node;
@@ -842,6 +874,7 @@ $('label-selection').addEventListener('click', () => {
   bulkEditing = true;
   bulkBookmarkIdList = [...selectedBookmarkSet];
   editingBookmarkId = null;
+  initialTagSet.clear();
   draftTagSet = new Set();
   $('tag-dialog-title').textContent = '批量打标签';
   $('tag-dialog-description').textContent = `为勾选的${bulkBookmarkIdList.length}条书签追加标签，保留已有标签。选中文件夹时包含其所有层级的书签。`;
@@ -876,10 +909,12 @@ function renderTagOptions() {
       row.append(element('span', '', tag.name));
       const edit = button('编辑', 'text-button', () => {
         renamingTagId = tag.id;
-        $('rename-tag-name').value = tag.name;
+        const nameInput = $('rename-tag-name');
+        nameInput.value = tag.name;
+        nameInput.defaultValue = nameInput.value;
         $('rename-tag-error').textContent = '';
         $('rename-tag-dialog').showModal();
-        $('rename-tag-name').focus(); $('rename-tag-name').select();
+        nameInput.focus(); nameInput.select();
       });
       edit.setAttribute('aria-label', `编辑标签“${tag.name}”`);
       const remove = button('删除', 'text-button danger', async () => {
@@ -901,8 +936,12 @@ function renderTagOptions() {
 
 function openEdit(node) {
   editingNode = node;
-  $('bookmark-name').value = node.title;
-  $('bookmark-url').value = node.url;
+  const nameInput = $('bookmark-name');
+  const urlInput = $('bookmark-url');
+  nameInput.value = node.title;
+  nameInput.defaultValue = nameInput.value;
+  urlInput.value = node.url;
+  urlInput.defaultValue = urlInput.value;
   $('edit-error').textContent = '';
   $('edit-dialog').showModal();
 }
@@ -993,6 +1032,47 @@ for (const [id, direction] of [['pending-previous', -1], ['pending-next', 1]]) {
 }
 $('clear-tags').addEventListener('click', () => { selectedTagSet.clear(); renderFilters(); renderBookmarks(); });
 document.querySelectorAll('.close-dialog').forEach(node => node.addEventListener('click', () => node.closest('dialog').close()));
+
+function isDialogBackdrop(event) {
+  const dialog = event.currentTarget;
+  if (event.target !== dialog) return false;
+  const { left, right, top, bottom } = dialog.getBoundingClientRect();
+  return event.clientX < left || event.clientX >= right || event.clientY < top || event.clientY >= bottom;
+}
+
+function hasTagDraft() {
+  const tagsChanged = draftTagSet.size !== initialTagSet.size || [...draftTagSet].some(id => !initialTagSet.has(id));
+  const submittingNewTag = $('new-tag-form').querySelector('button[type="submit"]').disabled;
+  return tagsChanged || $('new-tag').value !== '' || submittingNewTag || $('save-tags').disabled;
+}
+
+function hasUnsavedFormChanges(form) {
+  return [...form.querySelectorAll('input')].some(input => input.value !== input.defaultValue)
+    || form.querySelector('button[type="submit"]').disabled;
+}
+
+const backdropGuardMap = new Map([
+  ['tag-dialog', hasTagDraft],
+  ['rename-tag-dialog', () => hasUnsavedFormChanges($('rename-tag-form'))],
+  ['edit-dialog', () => hasUnsavedFormChanges($('edit-form'))],
+  ['settings-dialog', () => ['font-size', 'single-newtab-enabled', 'dedupe-enabled'].some(id => $(id).disabled)],
+  ['module-settings-dialog', () => $('module-settings-frame').contentDocument?.dispatchEvent(
+    new Event('before-backdrop-close', { cancelable: true })
+  ) === false]
+]);
+for (const [id, hasUnsavedChanges] of backdropGuardMap) {
+  const dialog = $(id);
+  let pointerStartedOutside = false;
+  dialog.addEventListener('pointerdown', event => {
+    pointerStartedOutside = event.button === 0 && isDialogBackdrop(event);
+  });
+  dialog.addEventListener('click', event => {
+    const startedOutside = pointerStartedOutside;
+    pointerStartedOutside = false;
+    if (startedOutside && isDialogBackdrop(event) && !hasUnsavedChanges()) dialog.close();
+  });
+}
+
 document.addEventListener('keydown', event => {
   if (event.key === 'Delete' && !event.repeat && !event.ctrlKey && !event.metaKey && !event.altKey
     && !selectionMode && selectedBookmarkId && !document.querySelector('dialog[open]')
@@ -1005,6 +1085,20 @@ document.addEventListener('keydown', event => {
     event.preventDefault();
     document.querySelectorAll('dialog[open]').forEach(dialog => dialog.close());
     $('search').focus(); $('search').select();
+  }
+  const key = event.key.toLowerCase();
+  if ((key !== 'x' && key !== 'v') || !(event.ctrlKey || event.metaKey) || event.altKey || event.shiftKey || event.repeat
+    || selectionMode || !selectedBookmarkId || bookmarkMutationRunning
+    || document.querySelector('dialog[open]') || event.target.isContentEditable
+    || event.target.closest('input, textarea, select, button')) return;
+
+  if (key === 'x' && canDragBookmarkNode(bookmarkNodeMap, selectedBookmarkId, false, selectedBookmarkSet)) {
+    event.preventDefault();
+    cutBookmarkId = selectedBookmarkId;
+    notify('书签已剪切，选中目标书签后粘贴');
+  } else if (key === 'v' && cutBookmarkId) {
+    event.preventDefault();
+    pasteCutBookmark(selectedBookmarkId);
   }
 });
 
