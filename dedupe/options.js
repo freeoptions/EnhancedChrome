@@ -197,7 +197,7 @@ ruleForm.addEventListener("submit", async (event) => {
     ruleIncludeHash.checked = true;
     initialRuleForm = readRuleForm();
     submitRuleButton.textContent = "保存规则";
-    setMessage("规则已保存，当前窗口会自动重新扫描。", false);
+    setMessage("规则已保存，会自动重新扫描标签页。", false);
   } catch (error) {
     setMessage(error.message, true);
   } finally {
@@ -226,16 +226,16 @@ confirmGeneratedButton.addEventListener("click", async () => {
   }
   const ruleList = await readRules();
   await writeRules([...ruleList, generatedRule]);
-  setMessage("候选规则已确认并添加，当前窗口会自动重新扫描。", false);
+  setMessage("候选规则已确认并添加，会自动重新扫描标签页。", false);
   sampleUrls.value = "";
   resetGeneratedPreview();
 });
 
 rescanButton.addEventListener("click", async () => {
-  await chrome.runtime.sendMessage({ type: "RESCAN_CURRENT_WINDOW" });
+  await chrome.runtime.sendMessage({ type: "RESCAN_TABS" });
   rescanButton.textContent = "已请求扫描";
   setTimeout(() => {
-    rescanButton.textContent = "重新扫描当前窗口";
+    rescanButton.textContent = "重新扫描标签页";
   }, 1200);
 });
 

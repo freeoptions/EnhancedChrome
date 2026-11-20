@@ -20,7 +20,7 @@
         <button id="export-rules-button" class="secondary-button" type="button">导出规则</button>
         <button id="import-rules-button" class="secondary-button" type="button">导入规则</button>
         <input id="import-rules-input" type="file" accept=".json,application/json" hidden>
-        <button id="rescan-button" class="secondary-button" type="button">重新扫描当前窗口</button>
+        <button id="rescan-button" class="secondary-button" type="button">重新扫描标签页</button>
       </div>
     </header>
 
@@ -83,7 +83,7 @@
       <div class="panel-heading">
         <div>
           <h2>已保存规则</h2>
-          <p>规则只在本地保存，并且只作用于当前 Chrome 窗口的去重。导入导出使用 JSON 文件。</p>
+          <p>规则保存在本地，适用于同一浏览器配置下所有普通窗口的网页去重。导入导出使用JSON文件。</p>
         </div>
       </div>
       <div id="rules-list" class="rules-list"></div>

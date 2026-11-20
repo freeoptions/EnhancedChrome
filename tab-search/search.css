@@ -1,0 +1,154 @@
+:root {
+  color-scheme: light dark;
+  font: 14px system-ui, sans-serif;
+  --background: #fff;
+  --text: #202124;
+  --muted: #646971;
+  --line: #e5e7eb;
+  --hover: #f3f5f8;
+  --selected: #e7effc;
+  --pin-active: #305c99;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #222428;
+    --text: #f1f3f5;
+    --muted: #b1b7c0;
+    --line: #41454e;
+    --hover: #2c3038;
+    --selected: #344667;
+    --pin-active: #9fc4ff;
+  }
+}
+
+* { box-sizing: border-box; }
+[hidden] { display: none; }
+
+body {
+  margin: 0;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--background);
+  color: var(--text);
+}
+
+#query {
+  width: 100%;
+  padding: 15px 18px;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  outline: none;
+  background: transparent;
+  color: inherit;
+  font: 18px system-ui, sans-serif;
+}
+
+#query::placeholder { color: var(--muted); }
+
+#results {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  margin: 0;
+  padding: 5px 6px;
+  list-style: none;
+}
+
+.tab-row {
+  display: flex;
+  align-items: center;
+  border-radius: 6px;
+  padding-right: 8px;
+}
+
+[role="option"] {
+  display: flex;
+  align-items: center;
+  flex: 1;
+  min-width: 0;
+  gap: 12px;
+  padding: 7px 12px;
+  min-height: 46px;
+  cursor: pointer;
+}
+
+.tab-row:hover { background: var(--hover); }
+.tab-row:has([aria-selected="true"]) { background: var(--selected); }
+.section-label { color: var(--muted); font-size: 12px; padding: 6px 12px 3px; }
+.row-action {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--muted);
+  opacity: 0;
+  pointer-events: none;
+  cursor: pointer;
+}
+.pinned-row > .row-action,
+.tab-row:hover > .row-action,
+.row-action:focus-visible { opacity: 1; pointer-events: auto; }
+.row-action:hover, .row-action:focus-visible { background: var(--line); }
+.pin-action { --action-icon: url("pin.svg"); }
+.rename-action { --action-icon: url("rename.svg"); }
+.pin-action[aria-pressed="true"] { color: var(--pin-active); }
+.row-action::before {
+  content: "";
+  display: block;
+  width: 17px;
+  height: 17px;
+  margin: auto;
+  background: currentColor;
+  -webkit-mask: var(--action-icon) center / contain no-repeat;
+  mask: var(--action-icon) center / contain no-repeat;
+}
+.icon { width: 20px; height: 20px; flex: none; object-fit: contain; }
+.tab-text { min-width: 0; }
+.tab-title, .tab-url { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tab-url, footer, #status { color: var(--muted); font-size: 12px; }
+#status { flex: 1; margin: 0; padding: 16px 18px; }
+#results:not([hidden]) + #status { flex: none; padding: 6px 18px; }
+
+footer {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  border-top: 1px solid var(--line);
+  padding: 7px 18px;
+}
+
+#pin-dialog {
+  width: min(340px, calc(100% - 24px));
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 16px;
+  background: var(--background);
+  color: var(--text);
+}
+
+#pin-dialog::backdrop { background: #0004; }
+#pin-dialog h2 { margin: 0 0 10px; font-size: 16px; }
+#pin-dialog p { margin: 0 0 12px; overflow-wrap: anywhere; }
+#pin-alias {
+  width: 100%;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--background);
+  color: inherit;
+  font: inherit;
+}
+.dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
+.dialog-actions button {
+  padding: 5px 12px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--hover);
+  color: inherit;
+  cursor: pointer;
+}
+#pin-confirm { background: var(--selected); }

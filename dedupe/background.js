@@ -5,17 +5,17 @@ import {
 } from "./url-utils.js";
 import { messageModule } from '../message-routing.js';
 import { getSettings, settingsReady } from '../settings-store.js';
+import { readPinnedTabIdSet } from '../tab-search/pins.js';
 import { groupDuplicateTabs, planDuplicateClosure } from './policy.js';
 
 const tabMetaMap = new Map();
 const autoProtectionMap = new Map();
 const pendingToastMap = new Map();
 const pendingNavigationMap = new Map();
-const scanTimerMap = new Map();
-const scanRequestMap = new Map();
-const scanningWindowIdSet = new Set();
-
 let currentWindowId = null;
+let scanTimer = null;
+let pendingScanDelay = null;
+let scanning = false;
 let ruleCacheList = null;
 let sessionStorageAvailable = Boolean(chrome.storage?.session);
 
@@ -51,7 +51,8 @@ async function persistSessionState() {
 
   try {
     await chrome.storage.session.set({
-      duplicateTabMeta: serializeMap(tabMetaMap)
+      duplicateTabMeta: serializeMap(tabMetaMap),
+      duplicateTabProtection: serializeMap(autoProtectionMap)
     });
   } catch {
     sessionStorageAvailable = false;
@@ -64,10 +65,13 @@ async function restoreSessionState() {
   }
 
   try {
-    const data = await chrome.storage.session.get("duplicateTabMeta");
+    const data = await chrome.storage.session.get(["duplicateTabMeta", "duplicateTabProtection"]);
 
     for (const [tabId, meta] of Object.entries(data.duplicateTabMeta || {})) {
       tabMetaMap.set(Number(tabId), meta);
+    }
+    for (const [tabId, protection] of Object.entries(data.duplicateTabProtection || {})) {
+      autoProtectionMap.set(Number(tabId), protection);
     }
   } catch {
     sessionStorageAvailable = false;
@@ -113,7 +117,6 @@ async function initializeCurrentWindow() {
     const window = await chrome.windows.getLastFocused();
     if (window?.id !== undefined && window.id !== chrome.windows.WINDOW_ID_NONE) {
       currentWindowId = window.id;
-      scheduleScan(currentWindowId, false);
     }
   } catch {
     currentWindowId = null;
@@ -126,6 +129,7 @@ async function initialize() {
   await loadRules();
   await initializeTabMeta();
   await initializeCurrentWindow();
+  scheduleScan();
 }
 
 const initialized = initialize();
@@ -149,50 +153,29 @@ function markTabComplete(tab) {
   meta.completedAt = now();
 }
 
-function isCurrentWindow(windowId) {
-  return windowId !== null && windowId === currentWindowId;
+function scheduleScan(urgent = false) {
+  if (!getSettings().dedupeEnabled) return;
+  const delay = urgent ? 0 : 40;
+  if (pendingScanDelay !== null && pendingScanDelay <= delay) return;
+  pendingScanDelay = delay;
+  if (!scanning) startScanTimer();
 }
 
-function scheduleScan(windowId, activate = false, urgent = false) {
-  if (!getSettings().dedupeEnabled || !isCurrentWindow(windowId)) {
-    return;
-  }
-
-  const pending = scanRequestMap.get(windowId);
-  scanRequestMap.set(windowId, {
-    activate: Boolean(pending?.activate || activate),
-    urgent: Boolean(pending?.urgent || urgent)
-  });
-
-  if (scanningWindowIdSet.has(windowId)) {
-    return;
-  }
-
-  const existingTimer = scanTimerMap.get(windowId);
-  if (existingTimer !== undefined) {
-    if (!urgent || pending?.urgent) return;
-    clearTimeout(existingTimer);
-  }
-
-  const timer = setTimeout(async () => {
-    scanTimerMap.delete(windowId);
-    const request = scanRequestMap.get(windowId);
-    scanRequestMap.delete(windowId);
-    scanningWindowIdSet.add(windowId);
+function startScanTimer() {
+  clearTimeout(scanTimer);
+  scanTimer = setTimeout(async () => {
+    scanTimer = null;
+    pendingScanDelay = null;
+    scanning = true;
     try {
-      await scanWindow(windowId, request.activate);
+      await scanWindows();
     } catch (error) {
       console.warn("检查重复标签页失败", error);
     } finally {
-      scanningWindowIdSet.delete(windowId);
-      const next = scanRequestMap.get(windowId);
-      if (next) {
-        scanRequestMap.delete(windowId);
-        scheduleScan(windowId, next.activate, next.urgent);
-      }
+      scanning = false;
+      if (pendingScanDelay !== null) startScanTimer();
     }
-  }, urgent ? 0 : 40);
-  scanTimerMap.set(windowId, timer);
+  }, pendingScanDelay);
 }
 
 function isProtected(tab) {
@@ -257,46 +240,64 @@ function compareTabs(left, right) {
   return left.index - right.index;
 }
 
-async function processDuplicateGroup(tabGroupList, requestedActivation = false) {
-  if (!getSettings().dedupeEnabled || !isCurrentWindow(tabGroupList[0]?.windowId) || tabGroupList.length < 2) {
-    return false;
-  }
+async function processDuplicateGroup(snapshotList, urlMap, ruleList, localWindowId) {
+  if (!getSettings().dedupeEnabled || ruleCacheList !== ruleList) return;
 
-  const protectedIdSet = new Set(tabGroupList.filter(tab => isProtected(tab).protected).map(tab => tab.id));
+  const tabGroupList = await Promise.all(snapshotList.map(tab => chrome.tabs.get(tab.id).catch(() => null)));
+  const pinnedTabIdSet = await readPinnedTabIdSet();
+  if (!getSettings().dedupeEnabled || ruleCacheList !== ruleList
+    || (localWindowId !== undefined && localWindowId !== currentWindowId)) return;
+  if (tabGroupList.some((tab, index) => !tab || tab.windowId !== snapshotList[index].windowId || getTabUrl(tab) !== urlMap.get(tab.id))) {
+    scheduleScan(true);
+    return;
+  }
+  if (tabGroupList.some(tab => pinnedTabIdSet.has(tab.id) && getTabUrl(tab) !== tab.url)) return;
+  const protectedIdSet = new Set(tabGroupList
+    .filter(tab => pinnedTabIdSet.has(tab.id) || isProtected(tab).protected)
+    .map(tab => tab.id));
   const plan = planDuplicateClosure(tabGroupList, protectedIdSet, compareTabs);
   const survivor = tabGroupList.find(tab => tab.id === plan.keepId);
   const removeIdSet = new Set(plan.removeIdList);
   const loserList = tabGroupList.filter(tab => removeIdSet.has(tab.id));
 
   if (loserList.length === 0) {
-    return true;
+    return;
   }
 
-  const shouldActivate = requestedActivation || loserList.some((tab) => tab.active);
+  const focusedLoser = loserList.find(tab => tab.active && tab.windowId === currentWindowId);
   try {
     await chrome.tabs.remove(loserList.map((tab) => tab.id));
-    if (shouldActivate) {
-      await chrome.tabs.update(survivor.id, { active: true });
+    if (focusedLoser) {
+      const activatedTab = await chrome.tabs.update(survivor.id, { active: true });
+      if (activatedTab.windowId !== focusedLoser.windowId) {
+        await chrome.windows.update(activatedTab.windowId, { focused: true });
+      }
       void showToast(survivor.id, `已关闭 ${loserList.length} 个重复标签页，已切换到保留页面`);
     }
   } catch (error) {
     console.warn("关闭重复标签页失败", error);
   }
-  return true;
 }
 
-async function scanWindow(windowId, requestedActivation = false) {
+async function scanWindows() {
   await initialized;
-  if (!getSettings().dedupeEnabled || !isCurrentWindow(windowId)) {
-    return;
-  }
+  if (!getSettings().dedupeEnabled) return;
 
   const ruleList = await loadRules();
-  const tabList = (await chrome.tabs.query({ windowId })).filter((tab) => isSupportedUrl(getTabUrl(tab)));
-  const groupList = groupDuplicateTabs(tabList, ruleList, getTabUrl);
+  const normalTabList = (await chrome.tabs.query({ windowType: "normal" })).filter(tab => !tab.incognito);
+  const localWindowId = currentWindowId;
+  const localTabList = localWindowId !== null && !normalTabList.some(tab => tab.windowId === localWindowId)
+    ? await chrome.tabs.query({ windowId: localWindowId }).catch(() => [])
+    : [];
 
-  for (const tabGroupList of groupList) {
-    await processDuplicateGroup(tabGroupList, requestedActivation);
+  for (const tabList of [normalTabList, localTabList]) {
+    const urlMap = new Map(tabList.map(tab => [tab.id, getTabUrl(tab)]));
+    const supportedTabList = tabList.filter(tab => tab.id >= 0 && isSupportedUrl(urlMap.get(tab.id)));
+    for (const tabGroupList of groupDuplicateTabs(supportedTabList, ruleList, tab => urlMap.get(tab.id))) {
+      if (tabGroupList.length > 1) {
+        await processDuplicateGroup(tabGroupList, urlMap, ruleList, tabList === localTabList ? localWindowId : undefined);
+      }
+    }
   }
 }
 
@@ -386,17 +387,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
     if (message?.type === "PAGE_PROTECTION_STATE" && sender.tab?.id !== undefined) {
       updateAutoProtection(sender.tab.id, message);
-      if (isCurrentWindow(sender.tab.windowId)) {
-        scheduleScan(sender.tab.windowId, Boolean(sender.tab.active));
-      }
+      await persistSessionState();
+      scheduleScan();
       sendResponse({ ok: true });
       return;
     }
 
-    if (message?.type === "RESCAN_CURRENT_WINDOW") {
-      if (currentWindowId !== null) {
-        scheduleScan(currentWindowId, false);
-      }
+    if (message?.type === "RESCAN_TABS") {
+      scheduleScan();
       sendResponse({ ok: true });
       return;
     }
@@ -417,7 +415,7 @@ chrome.tabs.onCreated.addListener((tab) => {
   meta.url = getTabUrl(tab);
   meta.windowId = tab.windowId;
   persistSessionState();
-  scheduleScan(tab.windowId, Boolean(tab.active), isSupportedUrl(meta.url));
+  scheduleScan(isSupportedUrl(meta.url));
 });
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
@@ -433,7 +431,7 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   }
   if (changeInfo.url || changeInfo.status || changeInfo.pinned !== undefined || changeInfo.discarded !== undefined) {
     const urgent = Boolean(changeInfo.url || tab.pendingUrl) && isSupportedUrl(targetUrl);
-    scheduleScan(tab.windowId, Boolean(tab.active), urgent);
+    scheduleScan(urgent);
   }
   persistSessionState();
 });
@@ -457,7 +455,7 @@ chrome.webNavigation.onBeforeNavigate.addListener((details) => {
       return;
     }
     setTabNavigation({ ...tab, pendingUrl: details.url }, details.url);
-    scheduleScan(tab.windowId, Boolean(tab.active), true);
+    scheduleScan(true);
   }).catch(() => {});
 });
 
@@ -475,7 +473,7 @@ chrome.webNavigation.onCommitted.addListener((details) => {
     const previousUrl = tabMetaMap.get(details.tabId)?.url;
     setTabNavigation(tab, details.url);
     if (isSupportedUrl(details.url) && (previousUrl !== details.url || (pendingUrl && pendingUrl !== details.url))) {
-      scheduleScan(tab.windowId, Boolean(tab.active), true);
+      scheduleScan(true);
     }
   }).catch(() => {});
 });
@@ -489,28 +487,21 @@ chrome.webNavigation.onErrorOccurred.addListener((details) => {
 chrome.tabs.onAttached.addListener((tabId, attachInfo) => {
   const meta = getMeta(tabId);
   meta.windowId = attachInfo.newWindowId;
-  if (isCurrentWindow(attachInfo.newWindowId)) {
-    scheduleScan(attachInfo.newWindowId, false);
-  }
+  scheduleScan();
 });
 
-chrome.tabs.onDetached.addListener((tabId, detachInfo) => {
+chrome.tabs.onDetached.addListener((tabId) => {
   const meta = getMeta(tabId);
   meta.windowId = null;
-  if (isCurrentWindow(detachInfo.oldWindowId)) {
-    scheduleScan(detachInfo.oldWindowId, false);
-  }
+  scheduleScan();
 });
 
-chrome.tabs.onReplaced.addListener((addedTabId, removedTabId) => {
+chrome.tabs.onReplaced.addListener((_, removedTabId) => {
   tabMetaMap.delete(removedTabId);
   autoProtectionMap.delete(removedTabId);
   pendingNavigationMap.delete(removedTabId);
-  chrome.tabs.get(addedTabId).then((tab) => {
-    if (isCurrentWindow(tab.windowId)) {
-      scheduleScan(tab.windowId, Boolean(tab.active));
-    }
-  }).catch(() => {});
+  persistSessionState();
+  scheduleScan();
 });
 
 chrome.windows.onFocusChanged.addListener((windowId) => {
@@ -519,15 +510,16 @@ chrome.windows.onFocusChanged.addListener((windowId) => {
     return;
   }
   currentWindowId = windowId;
-  scheduleScan(windowId, false);
+  scheduleScan();
 });
 
 chrome.storage.onChanged.addListener((changes, areaName) => {
   if (areaName === 'local' && changes.enhancedSettings) {
-    if (getSettings().dedupeEnabled && currentWindowId !== null) scheduleScan(currentWindowId, false);
+    if (getSettings().dedupeEnabled) scheduleScan();
     else {
-      for (const timer of scanTimerMap.values()) clearTimeout(timer);
-      scanTimerMap.clear(); scanRequestMap.clear();
+      clearTimeout(scanTimer);
+      scanTimer = null;
+      pendingScanDelay = null;
     }
   }
   if (areaName !== "local" || !changes.rules) {
@@ -536,14 +528,13 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
   ruleCacheList = Array.isArray(changes.rules.newValue)
     ? changes.rules.newValue.map((rule, index) => normalizeRule(rule, index))
     : [];
-  if (currentWindowId !== null) {
-    scheduleScan(currentWindowId, false);
-  }
+  scheduleScan();
 });
 
 chrome.runtime.onInstalled.addListener(async () => {
   await loadRules();
   await initializeCurrentWindow();
+  scheduleScan();
 });
 
 chrome.runtime.onStartup.addListener(async () => {

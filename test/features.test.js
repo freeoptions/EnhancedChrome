@@ -38,7 +38,7 @@ test('字号支持12至20的整数，旧配置默认14，非法值不写入', ()
 
 test('书签、去重消息互不抢响应，未知消息不处理', () => {
   for (const type of ['createTag', 'renameTag', 'addBookmarkTags', 'exportBackup', 'updateSettings']) assert.equal(messageModule(type), 'bookmarks');
-  for (const type of ['PAGE_PROTECTION_STATE', 'RESCAN_CURRENT_WINDOW']) assert.equal(messageModule(type), 'dedupe');
+  for (const type of ['PAGE_PROTECTION_STATE', 'RESCAN_TABS']) assert.equal(messageModule(type), 'dedupe');
   assert.equal(messageModule('GET_TAB_STATE'), null);
   assert.equal(messageModule('TOGGLE_MANUAL_PROTECTION'), null);
   assert.equal(messageModule('unknown'), null);

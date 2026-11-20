@@ -4,7 +4,7 @@ const bookmarkCommandSet = new Set([
   'syncTags', 'exportBackup', 'importBackup', 'retryPending', 'resolvePending', 'updateSettings'
 ]);
 const dedupeCommandSet = new Set([
-  'PAGE_PROTECTION_STATE', 'RESCAN_CURRENT_WINDOW'
+  'PAGE_PROTECTION_STATE', 'RESCAN_TABS'
 ]);
 
 export function messageModule(type) {

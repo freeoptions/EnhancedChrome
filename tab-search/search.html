@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>搜索标签页</title>
+  <link rel="stylesheet" href="search.css">
+  <script type="module" src="search.js"></script>
+</head>
+<body>
+  <input id="query" type="text" role="combobox" aria-label="搜索标签页标题" aria-controls="results"
+    aria-expanded="false" aria-autocomplete="list" placeholder="搜索标签页标题，空格分隔关键词" autocomplete="off" spellcheck="false" autofocus>
+  <ul id="results" role="listbox" aria-label="匹配的标签页" hidden></ul>
+  <p id="status" role="status">正在读取标签页…</p>
+  <footer><span>↑ ↓ 选择</span><span>Enter切换</span><span>Esc关闭</span></footer>
+  <dialog id="pin-dialog" aria-labelledby="pin-dialog-title">
+    <form method="dialog">
+      <h2 id="pin-dialog-title"></h2>
+      <p id="pin-dialog-description"></p>
+      <input id="pin-alias" type="text" aria-label="标签页别名" autocomplete="off">
+      <div class="dialog-actions">
+        <button id="pin-cancel" type="button">返回</button>
+        <button id="pin-confirm" value="confirm"></button>
+      </div>
+    </form>
+  </dialog>
+</body>
+</html>

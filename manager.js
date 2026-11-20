@@ -1149,8 +1149,10 @@ chrome.storage.local.get('sidebarWidth').then(storage => {
 async function updateShortcut() {
   try {
     const commandList = await chrome.commands.getAll();
-    const shortcut = commandList.find(item => item.name === '_execute_action')?.shortcut;
-    $('current-shortcut').textContent = shortcut ? `当前快捷键：${shortcut}` : '尚未分配快捷键或当前Chrome版本无法读取，请点击下方按钮设置。';
+    const managerShortcut = commandList.find(item => item.name === '_execute_action')?.shortcut;
+    const searchShortcut = commandList.find(item => item.name === 'search-tabs')?.shortcut;
+    $('current-shortcut').textContent = `打开书签页面：${managerShortcut || '尚未分配'}`;
+    $('tab-search-shortcut').textContent = `搜索标签页：${searchShortcut || '尚未分配'}`;
   } catch (error) { $('settings-error').textContent = error.message; }
 }
 $('settings').addEventListener('click', () => {

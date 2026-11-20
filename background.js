@@ -4,6 +4,7 @@ import { messageModule } from './message-routing.js';
 import { saveSettings } from './settings-store.js';
 import { startTagSync } from './tag-sync.js';
 import { openManager } from './manager-tab.js';
+import { openTabSearch } from './tab-search/window.js';
 import './dedupe/background.js';
 import './single-newtab.js';
 
@@ -26,6 +27,9 @@ async function readBookmarkUndoState() {
 }
 
 chrome.action.onClicked.addListener(openManager);
+chrome.commands.onCommand.addListener((command, tab) => {
+  if (command === 'search-tabs') openTabSearch(tab).catch(error => console.error('打开标签页搜索失败', error));
+});
 
 chrome.runtime.onMessage.addListener((command, sender, respond) => {
   if (messageModule(command?.type) !== 'bookmarks' || sender.id !== chrome.runtime.id
