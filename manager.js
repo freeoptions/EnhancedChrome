@@ -4,6 +4,8 @@ import './tag-sync-ui.js';
 import { canDragBookmarkNode, getBookmarkBatchMovePlan, getBookmarkDragScrollDelta, getBookmarkMoveDestination } from './bookmark-move.js';
 import { BookmarkRenderQueue } from './bookmark-render-queue.js';
 import { getBookmarkClickSelection, getRemainingSingleBookmarkId } from './bookmark-selection.js';
+import { createBookmarkExport } from './bookmark-export.js';
+import { parseBookmarkHtml } from './bookmark-import.js';
 
 const $ = id => document.getElementById(id);
 let treeList = [];
@@ -17,6 +19,10 @@ let folderId = null;
 let selectedTagSet = new Set();
 let tagFilterMode = 'multiple';
 const expandedSet = new Set();
+const exportFolderIdSet = new Set();
+let folderExportMode = false;
+let folderExportRunning = false;
+let folderMenuTrigger = null;
 let editingBookmarkId = null;
 let selectedBookmarkId = null;
 let cutBookmarkId = null;
@@ -79,6 +85,17 @@ function notify(text) {
   $('toast').textContent = text;
   $('toast').hidden = false;
   toastTimer = setTimeout(() => { $('toast').hidden = true; }, 2400);
+}
+
+function downloadFile(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const link = element('a');
+  link.href = url;
+  link.download = filename;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
 }
 
 function updateBookmarkUndo(result) {
@@ -389,8 +406,147 @@ function bindBookmarkDrag(row, node, allowSort = false) {
   });
 }
 
+function updateFolderExport() {
+  $('folder-export-actions').hidden = !folderExportMode;
+  $('folder-export-count').textContent = `已选 ${exportFolderIdSet.size} 个文件夹`;
+  $('export-selected-folders').disabled = folderExportRunning || !exportFolderIdSet.size;
+  $('export-bookmarks').disabled = folderExportRunning;
+}
+
+async function exportFolders(folderIdSet = null) {
+  if (folderExportRunning || folderIdSet?.size === 0) return;
+  const requestedIdSet = folderIdSet ? new Set(folderIdSet) : null;
+  folderExportRunning = true;
+  updateFolderExport();
+  try {
+    const currentTreeList = await chrome.bookmarks.getTree();
+    const result = createBookmarkExport(currentTreeList, requestedIdSet);
+    if (!result) throw new Error('所选文件夹已变化，请重新选择');
+    downloadFile(new Blob([result.html], { type: 'text/html;charset=utf-8' }), result.filename);
+    notify('已发起书签下载');
+  } catch (error) {
+    showError(error);
+  } finally {
+    folderExportRunning = false;
+    updateFolderExport();
+  }
+}
+
+$('export-bookmarks').addEventListener('click', () => exportFolders());
+
+$('import-bookmarks').addEventListener('click', () => {
+  const input = $('bookmark-html-file');
+  input.value = '';
+  input.click();
+});
+$('bookmark-html-file').addEventListener('change', async event => {
+  const file = event.target.files?.[0];
+  if (!file) return;
+  if (bookmarkMutationRunning) {
+    showError(new Error('正在处理其他书签操作，请稍后再导入'));
+    return;
+  }
+  bookmarkMutationRunning = true;
+  clearTimeout(refreshTimer);
+  const importButton = $('import-bookmarks');
+  importButton.disabled = true;
+  importButton.textContent = '正在导入…';
+  let destination;
+  let importedCount = 0;
+  let skippedCount = 0;
+  let failure;
+
+  async function writeNodes(nodeList, parentId) {
+    for (const node of nodeList) {
+      const { title, url, children } = node;
+      const created = await chrome.bookmarks.create({ parentId, title, ...(url === undefined ? {} : { url }) });
+      if (children) await writeNodes(children, created.id);
+      else importedCount++;
+    }
+  }
+
+  try {
+    const parsed = parseBookmarkHtml(await file.text());
+    if (!parsed.nodeList.length) throw new Error('文件中没有可导入的书签或文件夹，请选择书签 HTML 文件');
+    skippedCount = parsed.skippedCount;
+    destination = await chrome.bookmarks.create({ title: '导入的书签' });
+    expandedSet.add(destination.parentId);
+    await writeNodes(parsed.nodeList, destination.id);
+  } catch (error) {
+    failure = error;
+  } finally {
+    bookmarkMutationRunning = false;
+    importButton.disabled = false;
+    importButton.textContent = '导入书签';
+    await refresh();
+  }
+
+  if (failure) {
+    showError(destination
+      ? new Error(`导入中断，已写入的内容保留在“导入的书签”中（${importedCount} 条书签）。${failure.message}`)
+      : failure);
+  } else {
+    const summary = importedCount ? `已导入 ${importedCount} 条书签` : '已导入文件夹';
+    const skipped = skippedCount ? `，已跳过 ${skippedCount} 条无效链接` : '';
+    notify(`${summary}至“导入的书签”${skipped}`);
+  }
+});
+
+const folderMenu = $('folder-menu');
+
+function closeFolderMenu(restoreFocus = false) {
+  if (folderMenu.hidden) return;
+  folderMenu.hidden = true;
+  if (restoreFocus) folderMenuTrigger?.focus({ preventScroll: true });
+  folderMenuTrigger = null;
+}
+
+function openFolderMenu(event, trigger) {
+  event.preventDefault();
+  folderMenuTrigger = trigger;
+  folderMenu.hidden = false;
+  const anchor = trigger.getBoundingClientRect();
+  const x = event.clientX || anchor.left;
+  const y = event.clientY || anchor.bottom;
+  folderMenu.style.left = `${Math.max(4, Math.min(x, window.innerWidth - folderMenu.offsetWidth - 4))}px`;
+  folderMenu.style.top = `${Math.max(4, Math.min(y, window.innerHeight - folderMenu.offsetHeight - 4))}px`;
+  $('export-one-folder').focus({ preventScroll: true });
+}
+
+$('export-one-folder').addEventListener('click', () => {
+  const id = folderMenuTrigger.closest('[data-folder-id]').dataset.folderId;
+  closeFolderMenu(true);
+  exportFolders(new Set([id]));
+});
+$('select-export-folders').addEventListener('click', () => {
+  const line = folderMenuTrigger.closest('[data-folder-id]');
+  const id = line.dataset.folderId;
+  closeFolderMenu();
+  folderExportMode = true;
+  exportFolderIdSet.add(id);
+  renderFolders();
+  const selectedLine = $('folders').querySelector(`[data-folder-id="${CSS.escape(id)}"]`);
+  selectedLine?.querySelector('.folder-export-checkbox').focus({ preventScroll: true });
+});
+$('export-selected-folders').addEventListener('click', () => exportFolders(exportFolderIdSet));
+$('exit-folder-export').addEventListener('click', () => {
+  folderExportMode = false;
+  exportFolderIdSet.clear();
+  renderFolders();
+  ($('folders').querySelector('.folder-line.active .folder-button') ?? $('expand-folders')).focus({ preventScroll: true });
+});
+document.addEventListener('pointerdown', event => {
+  if (!folderMenu.contains(event.target)) closeFolderMenu();
+});
+document.addEventListener('focusin', event => {
+  if (!folderMenu.contains(event.target)) closeFolderMenu();
+});
+$('folders').addEventListener('scroll', () => closeFolderMenu(), { passive: true });
+window.addEventListener('resize', () => closeFolderMenu());
+
 function renderFolders() {
   const nav = $('folders');
+  closeFolderMenu();
   nav.replaceChildren();
   function addFolder(node, depth) {
     const line = element('div', `folder-line${folderId === node.id ? ' active' : ''}`);
@@ -432,6 +588,19 @@ function renderFolders() {
       bindBookmarkDrag(line, node, !!bookmarkNodeMap.get(node.parentId)?.parentId);
       select.draggable = line.draggable;
       if (select.draggable) select.title = `${node.title}\n拖动名称或图标移动文件夹，上下沿调整同级顺序，中央移入文件夹`;
+      line.addEventListener('contextmenu', event => openFolderMenu(event, select));
+      if (folderExportMode) {
+        const checkbox = element('input', 'folder-export-checkbox');
+        checkbox.type = 'checkbox';
+        checkbox.checked = exportFolderIdSet.has(node.id);
+        checkbox.setAttribute('aria-label', `选择导出 ${node.title}`);
+        checkbox.addEventListener('change', () => {
+          if (checkbox.checked) exportFolderIdSet.add(node.id);
+          else exportFolderIdSet.delete(node.id);
+          updateFolderExport();
+        });
+        line.append(checkbox);
+      }
     }
     nav.append(line);
     if (expandedSet.has(node.id)) childFolderList.forEach(child => addFolder(child, depth + 1));
@@ -441,6 +610,7 @@ function renderFolders() {
     for (const node of root.children ?? []) if (!node.url) addFolder(node, 0);
   }
   updateFolderSelection();
+  updateFolderExport();
 }
 
 $('expand-folders').addEventListener('click', () => {
@@ -955,6 +1125,7 @@ async function refresh() {
     treeList = nextTreeList;
     flatList = flattenTree(treeList);
     bookmarkNodeMap = new Map(flatList.map(node => [node.id, node]));
+    for (const id of exportFolderIdSet) if (!bookmarkNodeMap.has(id)) exportFolderIdSet.delete(id);
     folderBookmarkListMap.clear();
     const validBookmarkSet = new Set(flatList.filter(node => node.url).map(node => node.id));
     for (const id of selectedBookmarkSet) if (!validBookmarkSet.has(id)) selectedBookmarkSet.delete(id);
@@ -987,14 +1158,9 @@ $('export-tags').addEventListener('click', async () => {
   $('backup-error').textContent = '';
   try {
     const result = await command({ type: 'exportBackup' });
-    const url = URL.createObjectURL(new Blob([JSON.stringify(result.backup, null, 2)], { type: 'application/json;charset=utf-8' }));
-    const link = element('a');
-    link.href = url;
-    link.download = exportFilename();
-    document.body.append(link);
-    link.click(); link.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 60000);
-    $('backup-status').textContent = `已发起下载：${link.download}，请保留该文件用于换电脑恢复。`;
+    const filename = exportFilename();
+    downloadFile(new Blob([JSON.stringify(result.backup, null, 2)], { type: 'application/json;charset=utf-8' }), filename);
+    $('backup-status').textContent = `已发起下载：${filename}，请保留该文件用于换电脑恢复。`;
   } catch (error) { $('backup-error').textContent = error.message; }
   finally { $('export-tags').disabled = false; }
 });
@@ -1074,6 +1240,17 @@ for (const [id, hasUnsavedChanges] of backdropGuardMap) {
 }
 
 document.addEventListener('keydown', event => {
+  if (event.key === 'Escape' && !folderMenu.hidden) {
+    event.preventDefault();
+    closeFolderMenu(true);
+    return;
+  }
+  if (!folderMenu.hidden && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) {
+    event.preventDefault();
+    const nextButton = document.activeElement === $('export-one-folder') ? $('select-export-folders') : $('export-one-folder');
+    nextButton.focus();
+    return;
+  }
   if (event.key === 'Delete' && !event.repeat && !event.ctrlKey && !event.metaKey && !event.altKey
     && !selectionMode && selectedBookmarkId && !document.querySelector('dialog[open]')
     && !event.target.isContentEditable && !event.target.closest('input, textarea, select, button')) {

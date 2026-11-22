@@ -15,15 +15,27 @@
     <div class="toolbar-title">所有文件夹</div>
     <label class="search"><span aria-hidden="true">⌕</span><input id="search" type="search" placeholder="搜索书签名称或网址" aria-label="搜索书签名称或网址"><kbd>Ctrl F</kbd></label>
     <div class="toolbar-actions">
-      <button id="manage-tags" class="text-button">管理标签</button>
-      <button id="export-tags" class="text-button">导出标签</button>
-      <button id="import-tags" class="text-button">导入标签</button>
+      <button id="manage-tags" class="text-button">管理Tag</button>
+      <button id="export-tags" class="text-button">导出Tag</button>
+      <button id="import-tags" class="text-button">导入Tag</button>
+      <button id="export-bookmarks" class="text-button" type="button" title="将全部书签导出为 HTML">导出书签</button>
+      <button id="import-bookmarks" class="text-button" type="button" title="从书签 HTML 文件导入">导入书签</button>
       <button id="settings" class="text-button">设置</button>
     </div>
     <input id="backup-file" type="file" accept=".json,application/json" hidden>
+    <input id="bookmark-html-file" type="file" accept=".html,.htm,text/html" hidden>
   </header>
   <div class="layout">
-    <aside id="sidebar" aria-label="书签文件夹"><div class="folder-actions" role="group" aria-label="文件夹展开控制"><button id="expand-folders" class="text-button" aria-controls="folders">展开全部</button><button id="collapse-folders" class="text-button" aria-controls="folders">收起全部</button></div><nav id="folders"></nav><div class="sidebar-note tag-sync-panel"><div id="tag-sync-status" data-state="syncing" role="status" aria-live="polite"><span class="tag-sync-indicator" aria-hidden="true"></span><span id="tag-sync-text">正在检查标签同步…</span><span id="tag-sync-time" hidden></span></div><p id="tag-sync-detail"></p><button id="retry-tag-sync" class="text-button" hidden>重试同步</button></div></aside>
+    <aside id="sidebar" aria-label="书签文件夹">
+      <div class="folder-actions" role="group" aria-label="文件夹展开控制"><button id="expand-folders" class="text-button" aria-controls="folders">展开全部</button><button id="collapse-folders" class="text-button" aria-controls="folders">收起全部</button></div>
+      <div id="folder-export-actions" role="group" aria-label="多选文件夹导出" hidden>
+        <span id="folder-export-count" role="status"></span>
+        <button id="export-selected-folders" class="text-button" type="button" disabled>导出所选</button>
+        <button id="exit-folder-export" class="text-button" type="button">退出多选</button>
+      </div>
+      <nav id="folders"></nav>
+      <div class="sidebar-note tag-sync-panel"><div id="tag-sync-status" data-state="syncing" role="status" aria-live="polite"><span class="tag-sync-indicator" aria-hidden="true"></span><span id="tag-sync-text">正在检查标签同步…</span><span id="tag-sync-time" hidden></span></div><p id="tag-sync-detail"></p><button id="retry-tag-sync" class="text-button" hidden>重试同步</button></div>
+    </aside>
     <div id="sidebar-resizer" role="separator" tabindex="0" aria-label="调整文件夹侧栏宽度" aria-orientation="vertical" aria-controls="sidebar" aria-valuemin="140" aria-valuemax="600" aria-valuenow="280" title="左右拖动调整宽度，或按左右方向键"></div>
     <main>
       <section class="filter-panel" aria-label="标签筛选">
@@ -98,6 +110,10 @@
     <div class="dialog-heading"><h2 id="module-settings-title">功能设置</h2><button class="icon-button close-dialog" aria-label="关闭">×</button></div>
     <iframe id="module-settings-frame" title="功能设置"></iframe>
   </dialog>
+  <div id="folder-menu" role="group" aria-label="文件夹操作" hidden>
+    <button id="export-one-folder" type="button">导出此文件夹书签</button>
+    <button id="select-export-folders" type="button">多选文件夹导出…</button>
+  </div>
   <div id="toast" role="status" hidden></div>
   <div id="bookmark-undo" hidden><span id="bookmark-undo-text" role="status"></span><div class="bookmark-undo-actions"><button id="undo-bookmark" type="button">撤回</button><span id="bookmark-undo-countdown" aria-hidden="true"></span></div></div>
 </body>

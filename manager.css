@@ -23,6 +23,14 @@ aside { display:flex; flex-direction:column; overflow:auto; padding:16px 12px 12
 aside nav { flex:1; }
 .folder-actions { display:flex; flex-wrap:wrap; gap:2px; padding:0 4px 8px 12px; flex-shrink:0; }
 .folder-actions .text-button { font-size:var(--text-small); padding:6px 4px; }
+#folder-export-actions { display:flex; flex-wrap:wrap; align-items:center; gap:2px 6px; flex-shrink:0; margin:0 0 6px 12px; padding:4px; border-block:1px solid var(--line); font-size:var(--text-small); }
+#folder-export-count { flex-basis:100%; padding:2px 4px; color:var(--muted); }
+#folder-export-actions .text-button { padding:6px 4px; font-size:inherit; }
+.folder-export-checkbox { flex-shrink:0; width:16px; height:16px; margin:0 10px 0 2px; accent-color:var(--primary); cursor:pointer; }
+#folder-menu { position:fixed; z-index:10; max-width:calc(100vw - 8px); padding:4px; border:1px solid var(--line); border-radius:var(--radius); background:var(--surface); box-shadow:0 4px 16px #20212424; }
+#folder-menu button { display:block; width:100%; padding:8px 12px; border-radius:5px; text-align:left; }
+#folder-menu button:hover,#folder-menu button:focus-visible { background:var(--tint); }
+#folder-menu button:focus-visible { outline-offset:-2px; }
 .folder-line { position:relative; display:flex; align-items:center; min-height:40px; border-radius:0 8px 8px 0; color:var(--ink); }
 .folder-guide { position:absolute; top:0; bottom:0; width:1px; background:#e4e4e7; pointer-events:none; }
 .folder-line.active { background:var(--tint); color:var(--primary); }
