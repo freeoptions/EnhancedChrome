@@ -8,7 +8,6 @@ const aliasInput = document.getElementById('pin-alias');
 const pinCancel = document.getElementById('pin-cancel');
 const pinConfirm = document.getElementById('pin-confirm');
 const sourceWindowId = Number(new URLSearchParams(location.search).get('windowId'));
-const lastQueryKey = 'tabSearchLastQuery';
 let tabList = [];
 let pinList = [];
 let matchList = [];
@@ -193,12 +192,8 @@ pinDialog.addEventListener('close', () => {
   }
 });
 
-query.value = localStorage.getItem(lastQueryKey) ?? '';
+query.value = '';
 query.focus();
-query.select();
-query.addEventListener('input', () => {
-  localStorage.setItem(lastQueryKey, query.value);
-});
 
 query.addEventListener('keydown', event => {
   if (event.isComposing || event.keyCode === 229) return;

@@ -12,6 +12,7 @@ const tabMetaMap = new Map();
 const autoProtectionMap = new Map();
 const pendingToastMap = new Map();
 const pendingNavigationMap = new Map();
+const openingSourceMap = new Map();
 let currentWindowId = null;
 let scanTimer = null;
 let pendingScanDelay = null;
@@ -264,12 +265,26 @@ async function processDuplicateGroup(snapshotList, urlMap, ruleList, localWindow
     return;
   }
 
-  const focusedLoser = loserList.find(tab => tab.active && tab.windowId === currentWindowId);
   try {
+    const [activeTabList, focusedWindow] = await Promise.all([
+      chrome.tabs.query({ active: true }),
+      chrome.windows.getLastFocused()
+    ]);
+    const activeTabIdSet = new Set(activeTabList.map(tab => tab.id));
+    const focusedTab = activeTabList.find(tab => focusedWindow.focused && tab.windowId === focusedWindow.id);
+    const switchFromFocusedWindow = focusedTab && (removeIdSet.has(focusedTab.id) || tabGroupList.some(tab => {
+      const openingSource = openingSourceMap.get(tab.id);
+      return tab.windowId === focusedTab.windowId && openingSource
+        && (openingSource.sourceTabId ?? tab.openerTabId) === focusedTab.id;
+    }));
+    let activatedTab;
+    if (switchFromFocusedWindow || loserList.some(tab => activeTabIdSet.has(tab.id) && tab.windowId === survivor.windowId)) {
+      // 先激活保留页，避免关闭当前页时浏览器选回来源页。
+      activatedTab = await chrome.tabs.update(survivor.id, { active: true });
+    }
     await chrome.tabs.remove(loserList.map((tab) => tab.id));
-    if (focusedLoser) {
-      const activatedTab = await chrome.tabs.update(survivor.id, { active: true });
-      if (activatedTab.windowId !== focusedLoser.windowId) {
+    if (switchFromFocusedWindow) {
+      if (activatedTab.windowId !== focusedTab.windowId) {
         await chrome.windows.update(activatedTab.windowId, { focused: true });
       }
       void showToast(survivor.id, `已关闭 ${loserList.length} 个重复标签页，已切换到保留页面`);
@@ -297,6 +312,9 @@ async function scanWindows() {
       if (tabGroupList.length > 1) {
         await processDuplicateGroup(tabGroupList, urlMap, ruleList, tabList === localTabList ? localWindowId : undefined);
       }
+    }
+    for (const tab of supportedTabList) {
+      if (tab.status === "complete" && openingSourceMap.get(tab.id)?.loaded) openingSourceMap.delete(tab.id);
     }
   }
 }
@@ -408,6 +426,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 });
 
 chrome.tabs.onCreated.addListener((tab) => {
+  if (getSettings().dedupeEnabled && !tab.active && !openingSourceMap.has(tab.id)) {
+    openingSourceMap.set(tab.id, { sourceTabId: tab.openerTabId, loaded: false });
+  }
   const meta = getMeta(tab.id);
   meta.createdAt = now();
   meta.navigationStartedAt = now();
@@ -420,6 +441,12 @@ chrome.tabs.onCreated.addListener((tab) => {
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   const targetUrl = getTabUrl(tab, changeInfo);
+  const openingSource = openingSourceMap.get(tabId);
+  if (openingSource?.loaded && (changeInfo.url || changeInfo.status === "loading")) {
+    openingSourceMap.delete(tabId);
+  } else if (openingSource && changeInfo.status === "complete" && isSupportedUrl(targetUrl)) {
+    openingSource.loaded = true;
+  }
   setTabNavigation(tab, targetUrl);
   if (changeInfo.status === "complete") {
     pendingNavigationMap.delete(tabId);
@@ -441,7 +468,16 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   autoProtectionMap.delete(tabId);
   pendingToastMap.delete(tabId);
   pendingNavigationMap.delete(tabId);
+  openingSourceMap.delete(tabId);
   persistSessionState();
+});
+
+chrome.webNavigation.onCreatedNavigationTarget.addListener(({ tabId, sourceTabId, url }) => {
+  if (!getSettings().dedupeEnabled || !isSupportedUrl(url)) return;
+  const openingSource = openingSourceMap.get(tabId);
+  if (openingSource) openingSource.sourceTabId = sourceTabId;
+  else openingSourceMap.set(tabId, { sourceTabId, loaded: false });
+  scheduleScan(true);
 });
 
 chrome.webNavigation.onBeforeNavigate.addListener((details) => {
@@ -449,6 +485,7 @@ chrome.webNavigation.onBeforeNavigate.addListener((details) => {
     return;
   }
 
+  if (openingSourceMap.get(details.tabId)?.loaded) openingSourceMap.delete(details.tabId);
   pendingNavigationMap.set(details.tabId, details.url);
   chrome.tabs.get(details.tabId).then((tab) => {
     if (pendingNavigationMap.get(details.tabId) !== details.url) {
@@ -500,6 +537,7 @@ chrome.tabs.onReplaced.addListener((_, removedTabId) => {
   tabMetaMap.delete(removedTabId);
   autoProtectionMap.delete(removedTabId);
   pendingNavigationMap.delete(removedTabId);
+  openingSourceMap.delete(removedTabId);
   persistSessionState();
   scheduleScan();
 });
@@ -520,6 +558,7 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
       clearTimeout(scanTimer);
       scanTimer = null;
       pendingScanDelay = null;
+      openingSourceMap.clear();
     }
   }
   if (areaName !== "local" || !changes.rules) {

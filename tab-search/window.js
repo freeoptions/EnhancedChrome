@@ -1,4 +1,10 @@
-import { replacePinnedTab } from './pins.js';
+import { replacePinnedTab, updatePinnedTabUrl } from './pins.js';
+
+chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+  if (changeInfo.url) {
+    updatePinnedTabUrl(tabId, changeInfo.url).catch(error => console.error('保存置顶标签页网址失败', error));
+  }
+});
 
 chrome.tabs.onReplaced.addListener((addedTabId, removedTabId) => {
   replacePinnedTab(addedTabId, removedTabId).catch(error => console.error('更新置顶标签页失败', error));

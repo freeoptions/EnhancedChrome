@@ -32,7 +32,7 @@ export function readTabPins(tabList) {
     }
     for (const pin of pinList) {
       if (nextBindingMap[pin.id] !== undefined) continue;
-      const tab = tabList.find(tab => tab.url === pin.url && !claimedIdSet.has(tab.id));
+      const tab = tabList.find(tab => (tab.url === pin.url || tab.pendingUrl === pin.url) && !claimedIdSet.has(tab.id));
       if (!tab) continue;
       nextBindingMap[pin.id] = tab.id;
       claimedIdSet.add(tab.id);
@@ -75,6 +75,16 @@ export function bindTabPin(id, tabId) {
     const bindingMap = session[bindingsKey] ?? {};
     bindingMap[id] = tabId;
     await chrome.storage.session.set({ [bindingsKey]: bindingMap });
+  });
+}
+
+export function updatePinnedTabUrl(tabId, url) {
+  return navigator.locks.request(lockName, async () => {
+    const { pinList, bindingMap } = await readState();
+    const pin = pinList.find(pin => bindingMap[pin.id] === tabId);
+    if (!pin || pin.url === url) return;
+    pin.url = url;
+    await chrome.storage.local.set({ [pinsKey]: pinList });
   });
 }
 
