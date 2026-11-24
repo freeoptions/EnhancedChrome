@@ -1,4 +1,6 @@
 import { addTabPin, bindTabPin, changeTabPin, readTabPins } from './pins.js';
+import { matchesTabSearch } from './match.js';
+import { logTabPin } from './pin-log.js';
 
 const query = document.getElementById('query');
 const results = document.getElementById('results');
@@ -32,14 +34,16 @@ function select(index) {
 async function switchTo(tab) {
   if (!tab || switching) return;
   switching = true;
+  let tabId = tab.id;
   try {
-    let tabId = tab.id;
     if (tab.pin) {
+      logTabPin('点击置顶项', { pinId: tab.pin.id, displayedTabId: tabId ?? null, sourceWindowId });
       await readTabs();
       const pin = pinList.find(pin => pin.id === tab.pin.id);
       if (!pin) throw new Error('置顶记录已移除。');
       tabId = pin.tabId;
       if (tabId === undefined) {
+        logTabPin('按保存的网址新开标签', { pinId: pin.id, sourceWindowId });
         const reopenedTab = await chrome.tabs.create({ windowId: sourceWindowId, url: pin.url, active: false });
         tabId = reopenedTab.id;
         await bindTabPin(pin.id, tabId);
@@ -47,8 +51,10 @@ async function switchTo(tab) {
     }
     const activatedTab = await chrome.tabs.update(tabId, { active: true });
     await chrome.windows.update(activatedTab.windowId, { focused: true });
+    if (tab.pin) logTabPin('已切换到标签', { pinId: tab.pin.id, tabId, windowId: activatedTab.windowId });
     window.close();
-  } catch {
+  } catch (error) {
+    if (tab.pin) logTabPin('切换置顶标签失败', { pinId: tab.pin.id, tabId: tabId ?? null, errorName: error.name });
     status.textContent = '无法打开或切换到该标签页。';
     status.hidden = false;
   } finally {
@@ -158,10 +164,9 @@ function render() {
   const pinnedList = keywordList.length ? [] : pinList.map(pin => ({
     ...(tabMap.get(pin.tabId) ?? { title: pin.title, url: pin.url }), pin
   }));
-  const resultList = keywordList.length ? openedList.filter(tab => {
-    const searchTitle = `${tab.title} ${tab.pin?.alias || ''}`.toLowerCase();
-    return keywordList.every(keyword => searchTitle.includes(keyword));
-  }) : openedList.filter(tab => !tab.pin);
+  const resultList = keywordList.length
+    ? openedList.filter(tab => matchesTabSearch(tab, keywordList))
+    : openedList.filter(tab => !tab.pin);
   matchList = [...pinnedList, ...resultList];
   optionList = [];
   results.replaceChildren();

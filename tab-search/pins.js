@@ -1,3 +1,5 @@
+import { logTabPin } from './pin-log.js';
+
 const pinsKey = 'tabSearchPins';
 const bindingsKey = 'tabSearchPinBindings';
 const lockName = 'tab-search-pins';
@@ -40,6 +42,22 @@ export function readTabPins(tabList) {
     if (JSON.stringify(nextBindingMap) !== JSON.stringify(bindingMap)) {
       await chrome.storage.session.set({ [bindingsKey]: nextBindingMap });
     }
+    for (const pin of pinList) {
+      const previousTabId = bindingMap[pin.id] ?? null;
+      const tabId = nextBindingMap[pin.id] ?? null;
+      const matchedTab = tabList.find(tab => tab.id === tabId);
+      logTabPin('检查置顶关联', {
+        pinId: pin.id,
+        previousTabId,
+        tabId,
+        previousTabInSnapshot: tabIdSet.has(previousTabId),
+        tabCount: tabList.length,
+        chromePinned: matchedTab?.pinned ?? null,
+        savedUrlMatchesCurrent: matchedTab ? matchedTab.url === pin.url : null,
+        savedUrlMatchesPending: matchedTab ? matchedTab.pendingUrl === pin.url : null,
+        result: tabId === null ? '未找到' : tabId === previousTabId ? '按标签ID找到' : '按网址找到'
+      });
+    }
     return pinList.map(pin => ({ ...pin, tabId: nextBindingMap[pin.id] }));
   });
 }
@@ -53,6 +71,7 @@ export function addTabPin(tab) {
     bindingMap[id] = tab.id;
     await chrome.storage.session.set({ [bindingsKey]: bindingMap });
     await chrome.storage.local.set({ [pinsKey]: [...pinList, { id, url: tab.url, title: tab.title, alias: '' }] });
+    logTabPin('新增置顶', { pinId: id, tabId: tab.id, chromePinned: tab.pinned });
   });
 }
 
@@ -75,6 +94,7 @@ export function bindTabPin(id, tabId) {
     const bindingMap = session[bindingsKey] ?? {};
     bindingMap[id] = tabId;
     await chrome.storage.session.set({ [bindingsKey]: bindingMap });
+    logTabPin('保存新开标签的关联', { pinId: id, tabId });
   });
 }
 
@@ -85,6 +105,7 @@ export function updatePinnedTabUrl(tabId, url) {
     if (!pin || pin.url === url) return;
     pin.url = url;
     await chrome.storage.local.set({ [pinsKey]: pinList });
+    logTabPin('更新置顶网址', { pinId: pin.id, tabId });
   });
 }
 
@@ -93,6 +114,7 @@ export function replacePinnedTab(addedTabId, removedTabId) {
     const session = await chrome.storage.session.get(bindingsKey);
     const bindingMap = session[bindingsKey] ?? {};
     const id = Object.keys(bindingMap).find(id => bindingMap[id] === removedTabId);
+    logTabPin('Chrome替换标签', { pinId: id ?? null, removedTabId, addedTabId });
     if (id === undefined) return;
     bindingMap[id] = addedTabId;
     await chrome.storage.session.set({ [bindingsKey]: bindingMap });

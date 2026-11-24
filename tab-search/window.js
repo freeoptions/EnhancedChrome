@@ -1,4 +1,7 @@
+import { listenForTabPinLogs } from './pin-log.js';
 import { replacePinnedTab, updatePinnedTabUrl } from './pins.js';
+
+listenForTabPinLogs();
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
   if (changeInfo.url) {
